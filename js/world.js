@@ -221,9 +221,19 @@ export class World {
       this.buildHouse(house);
       this.scene.add(house.group);
 
-      // Draw side-branch path from street to door
+      // Draw side-branch path from street to door (extends past threshold into building)
       const doorZ = z + halfD + 0.8;
-      this._drawPathSegment(new THREE.Vector3(0, 0, doorZ), new THREE.Vector3(x, 0, doorZ));
+      const pastDoor = x + (useLeft ? -1.5 : 1.5); // extend slightly past the door
+      this._drawPathSegment(new THREE.Vector3(0, 0, doorZ), new THREE.Vector3(pastDoor, 0, doorZ));
+
+      // Wider dirt patch at the doorway entrance
+      const doorPatch = new THREE.Mesh(
+        new THREE.BoxGeometry(DOOR_W + 1, 0.06, 2.5),
+        new THREE.MeshLambertMaterial({ color: new THREE.Color(DIRT).offsetHSL(0, 0, -0.03) })
+      );
+      doorPatch.position.set(x, 0.09, doorZ);
+      doorPatch.receiveShadow = true;
+      this.scene.add(doorPatch);
 
       // Advance cursor
       if (useLeft) {

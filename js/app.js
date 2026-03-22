@@ -448,6 +448,9 @@ async function buildWorld(range) {
 
   initTimelineUI();
 
+  console.log(`Timeline: ${data.sessions.length} sessions queued, baseSpeed=${timeline.baseSpeed.toFixed(0)}`);
+  console.log(`Rooms: ${world.rooms.length}, PathGraph nodes: ${world.pathGraph.nodes.size}`);
+
   setLoadingProgress(100, 'Welcome!');
 }
 
@@ -493,7 +496,11 @@ function updateTimeline(delta) {
   // Spawn sessions whose spawnAt <= current timeline position
   while (timeline.sessionQueue.length > 0 && timeline.sessionQueue[0].spawnAt <= timeline.current) {
     const session = timeline.sessionQueue.shift();
-    spawnVisitorWithJourney(session);
+    try {
+      spawnVisitorWithJourney(session);
+    } catch (err) {
+      console.warn('Failed to spawn visitor:', err.message);
+    }
   }
 
   updateTimelineUI();

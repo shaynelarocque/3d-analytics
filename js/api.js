@@ -163,8 +163,14 @@ export function generateDemoSessions(pages, count = 15, startAt = null, endAt = 
       steps.push({ page: shuffled[s].x, duration, events });
     }
 
-    // Distribute spawn times across the date range
-    const spawnAt = rangeStart + Math.random() * rangeMs;
+    // First few sessions spawn near the start so characters appear immediately
+    let spawnAt;
+    if (i < 3) {
+      // First 3 sessions within the first 0.5% of the range
+      spawnAt = rangeStart + Math.random() * rangeMs * 0.005;
+    } else {
+      spawnAt = rangeStart + Math.random() * rangeMs;
+    }
 
     sessions.push({ id: `demo-${i}`, steps, spawnAt });
   }
