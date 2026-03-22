@@ -8,8 +8,9 @@ import * as THREE from 'three';
 // Character height: ~2 units from feet to top of head
 
 const SKIN_TONES = [0xf5c6a0, 0xd4a373, 0xc08050, 0x8b6b4a, 0xf0d0b0, 0xb07840];
-const SHIRT_COLORS = [0xc0392b, 0x2980b9, 0x27ae60, 0xf39c12, 0x8e44ad, 0x1abc9c, 0xe74c3c, 0x3498db, 0xd35400, 0x16a085];
-const PANTS_COLORS = [0x2c3e50, 0x7f8c8d, 0x6b4226, 0x1a5276, 0x4a235a, 0x1c2833, 0x5d4037];
+// RCT2-style bright guest clothing
+const SHIRT_COLORS = [0xe84040, 0x4080e8, 0x40c840, 0xf0c020, 0xd050d0, 0x40d0d0, 0xf06020, 0x8060e0, 0xe86090, 0x60c060];
+const PANTS_COLORS = [0x3040a0, 0x808080, 0x805020, 0x404040, 0x206060, 0x604080, 0x306030];
 const HAIR_COLORS = [0x2c1a0e, 0x8b4513, 0xdaa520, 0xc0392b, 0x1a1a1a, 0xf5f5dc, 0x6e3b1e];
 
 const WALK_SPEED = 3.5;
@@ -364,13 +365,22 @@ export class Character {
     canvas.height = 64;
     const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#000000cc';
+    // RCT2-style thought bubble: beveled panel
+    ctx.fillStyle = '#c6b790';
+    ctx.fillRect(8, 8, 240, 40);
+    // Raised bevel
+    ctx.strokeStyle = '#e8dcc0';
+    ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.roundRect(8, 8, 240, 40, 4);
-    ctx.fill();
+    ctx.moveTo(8, 48); ctx.lineTo(8, 8); ctx.lineTo(248, 8);
+    ctx.stroke();
+    ctx.strokeStyle = '#6b5e3e';
+    ctx.beginPath();
+    ctx.moveTo(248, 8); ctx.lineTo(248, 48); ctx.lineTo(8, 48);
+    ctx.stroke();
 
-    ctx.fillStyle = '#ffff00';
-    ctx.font = 'bold 16px monospace';
+    ctx.fillStyle = '#1a1a1a';
+    ctx.font = 'bold 14px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, 128, 28, 230);

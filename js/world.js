@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { PathGraph } from './pathfinding.js';
 
-const STONE = 0x8c8c8c;
-const STONE_DARK = 0x6e6e6e;
-const WOOD = 0x8b6914;
-const WOOD_DARK = 0x6b4f12;
-const GRASS = 0x3a7d30;
-const DIRT = 0x9e8b6e;
+// RCT2 color palette — bright, saturated, toylike
+const STONE = 0xc8b898;
+const STONE_DARK = 0xa09070;
+const WOOD = 0xb07830;
+const WOOD_DARK = 0x8b5e20;
+const GRASS = 0x48a830;
+const DIRT = 0xc8a868;
 
 const ROOM_W = 6;
 const ROOM_D = 6;
@@ -35,20 +36,28 @@ function mat(color) {
 }
 
 function createTextTexture(text, opts = {}) {
-  const { fontSize = 20, fontColor = '#ffcc00', bgColor = '#3a2e1eee', width = 256, height = 64 } = opts;
+  const { fontSize = 20, fontColor = '#1a1a1a', bgColor = '#c6b790', width = 256, height = 64 } = opts;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext('2d');
 
+  // RCT2-style beveled sign background
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = '#5a4d3a';
-  ctx.lineWidth = 3;
-  ctx.strokeRect(2, 2, width - 4, height - 4);
+  // Raised bevel: light top/left, dark bottom/right
+  ctx.strokeStyle = '#e8dcc0';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, height); ctx.lineTo(0, 0); ctx.lineTo(width, 0);
+  ctx.stroke();
+  ctx.strokeStyle = '#6b5e3e';
+  ctx.beginPath();
+  ctx.moveTo(width, 0); ctx.lineTo(width, height); ctx.lineTo(0, height);
+  ctx.stroke();
 
   ctx.fillStyle = fontColor;
-  ctx.font = `${fontSize}px bold monospace`;
+  ctx.font = `bold ${fontSize}px monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
@@ -56,11 +65,11 @@ function createTextTexture(text, opts = {}) {
   while (ctx.measureText(display).width > width - 20 && display.length > 3) {
     display = display.slice(0, -4) + '...';
   }
-  ctx.fillText(display, width / 2, height / 2);
-
-  ctx.globalCompositeOperation = 'destination-over';
-  ctx.fillStyle = '#000';
+  // Text shadow (RCT2 style light shadow)
+  ctx.fillStyle = '#e8dcc0';
   ctx.fillText(display, width / 2 + 1, height / 2 + 1);
+  ctx.fillStyle = fontColor;
+  ctx.fillText(display, width / 2, height / 2);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.NearestFilter;
@@ -426,7 +435,7 @@ export class World {
 
         // Room label on back wall
         const labelTex = createTextTexture(this._shortName(house.pages[i].x), {
-          fontSize: 14, width: 192, height: 32, fontColor: '#00ff00',
+          fontSize: 14, width: 192, height: 32, fontColor: '#2e7d32',
         });
         const label = new THREE.Mesh(
           new THREE.PlaneGeometry(1.8, 0.35),
@@ -437,7 +446,7 @@ export class World {
 
         // Visitor count
         const countTex = createTextTexture(`${house.pages[i].y} visits`, {
-          fontSize: 12, fontColor: '#ffcc00', width: 128, height: 24,
+          fontSize: 12, fontColor: '#1a1a1a', width: 128, height: 24,
         });
         const countLabel = new THREE.Mesh(
           new THREE.PlaneGeometry(1.2, 0.25),
@@ -447,7 +456,7 @@ export class World {
         g.add(countLabel);
 
         // Room light
-        const light = new THREE.PointLight(0xffa500, 0.4, 8);
+        const light = new THREE.PointLight(0xfff0c0, 0.5, 8);
         light.position.set(cx, 2.5, roomCenterZ);
         g.add(light);
       }
@@ -471,7 +480,7 @@ export class World {
 
       // Room label
       const labelTex = createTextTexture(this._shortName(house.pages[0].x), {
-        fontSize: 14, width: 192, height: 32, fontColor: '#00ff00',
+        fontSize: 14, width: 192, height: 32, fontColor: '#2e7d32',
       });
       const label = new THREE.Mesh(
         new THREE.PlaneGeometry(1.8, 0.35),
@@ -482,7 +491,7 @@ export class World {
 
       // Count
       const countTex = createTextTexture(`${house.pages[0].y} visits`, {
-        fontSize: 12, fontColor: '#ffcc00', width: 128, height: 24,
+        fontSize: 12, fontColor: '#1a1a1a', width: 128, height: 24,
       });
       const countLabel = new THREE.Mesh(
         new THREE.PlaneGeometry(1.2, 0.25),
@@ -492,14 +501,14 @@ export class World {
       g.add(countLabel);
 
       // Light
-      const light = new THREE.PointLight(0xffa500, 0.4, 8);
+      const light = new THREE.PointLight(0xfff0c0, 0.5, 8);
       light.position.set(0, 2.5, 0);
       g.add(light);
 
       // Window on left wall
       const winMesh = new THREE.Mesh(
         new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshBasicMaterial({ color: 0x1a1a2e, transparent: true, opacity: 0.7 })
+        new THREE.MeshBasicMaterial({ color: 0x4080c0, transparent: true, opacity: 0.6 })
       );
       winMesh.position.set(-halfW + 0.01, WALL_H / 2 + 0.5, 0);
       winMesh.rotation.y = Math.PI / 2;
@@ -529,10 +538,11 @@ export class World {
   }
 
   createGround() {
-    const groundGeo = new THREE.PlaneGeometry(200, 200, 20, 20);
+    // RCT2-style flat, bright green ground (low subdivisions for chunky look)
+    const groundGeo = new THREE.PlaneGeometry(200, 200, 10, 10);
     const pos = groundGeo.attributes.position;
     for (let i = 0; i < pos.count; i++) {
-      pos.setZ(i, pos.getZ(i) + (Math.random() - 0.5) * 0.15);
+      pos.setZ(i, pos.getZ(i) + (Math.random() - 0.5) * 0.08);
     }
     groundGeo.computeVertexNormals();
 
@@ -548,8 +558,8 @@ export class World {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // Central dirt area
-    const dirtGeo = new THREE.CircleGeometry(8, 12);
+    // Central dirt plaza (square for RCT2 feel)
+    const dirtGeo = new THREE.PlaneGeometry(16, 16);
     const dirtMat = new THREE.MeshLambertMaterial({ color: DIRT });
     const dirt = new THREE.Mesh(dirtGeo, dirtMat);
     dirt.rotation.x = -Math.PI / 2;
@@ -558,25 +568,28 @@ export class World {
   }
 
   createSky() {
-    const skyGeo = new THREE.SphereGeometry(95, 16, 16);
-    const skyMat = new THREE.MeshBasicMaterial({ color: 0x87CEEB, side: THREE.BackSide });
+    // RCT2-style bright green-blue sky
+    const skyGeo = new THREE.SphereGeometry(95, 8, 8); // low poly for pixelated look
+    const skyMat = new THREE.MeshBasicMaterial({ color: 0x88c070, side: THREE.BackSide });
     this.scene.add(new THREE.Mesh(skyGeo, skyMat));
 
-    for (let i = 0; i < 12; i++) {
+    // Chunky blocky clouds (RCT2 style)
+    for (let i = 0; i < 10; i++) {
       const cloudGroup = new THREE.Group();
-      const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 });
+      const cloudMat = new THREE.MeshBasicMaterial({ color: 0xf0f0e8, transparent: true, opacity: 0.85 });
 
-      for (let j = 0; j < 3 + Math.floor(Math.random() * 3); j++) {
-        const size = 2 + Math.random() * 3;
-        const part = new THREE.Mesh(new THREE.BoxGeometry(size, size * 0.4, size * 0.8), cloudMat);
-        part.position.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 2);
+      // More boxy, fewer parts — chunky pixel clouds
+      for (let j = 0; j < 2 + Math.floor(Math.random() * 2); j++) {
+        const size = 3 + Math.random() * 4;
+        const part = new THREE.Mesh(new THREE.BoxGeometry(size, size * 0.3, size * 0.6), cloudMat);
+        part.position.set((Math.random() - 0.5) * 3, 0, (Math.random() - 0.5) * 1.5);
         cloudGroup.add(part);
       }
 
       const angle = Math.random() * Math.PI * 2;
-      const radius = 40 + Math.random() * 40;
-      cloudGroup.position.set(Math.cos(angle) * radius, 25 + Math.random() * 15, Math.sin(angle) * radius);
-      cloudGroup.userData.cloudSpeed = 0.1 + Math.random() * 0.2;
+      const radius = 35 + Math.random() * 45;
+      cloudGroup.position.set(Math.cos(angle) * radius, 22 + Math.random() * 12, Math.sin(angle) * radius);
+      cloudGroup.userData.cloudSpeed = 0.05 + Math.random() * 0.1;
       cloudGroup.userData.cloudAngle = angle;
       cloudGroup.userData.cloudRadius = radius;
       this.scene.add(cloudGroup);
@@ -653,23 +666,26 @@ export class World {
     const tree = new THREE.Group();
     tree.position.copy(position);
 
-    const trunkH = 2 + Math.random() * 2;
-    const trunk = new THREE.Mesh(new THREE.BoxGeometry(0.5, trunkH, 0.5), mat(0x5a3a1a));
+    // RCT2-style chunky tree
+    const trunkH = 1.5 + Math.random() * 1.5;
+    const trunk = new THREE.Mesh(new THREE.BoxGeometry(0.6, trunkH, 0.6), mat(0x8b5e20));
     trunk.position.y = trunkH / 2;
     trunk.castShadow = true;
     tree.add(trunk);
 
+    // Bright green foliage — very saturated RCT2 style
+    const greenBase = Math.random() > 0.5 ? 0x38a028 : 0x2d8818;
     const foliageMat = new THREE.MeshLambertMaterial({
-      color: new THREE.Color(0x2d6e1e).offsetHSL(0, 0, (Math.random() - 0.5) * 0.1),
+      color: new THREE.Color(greenBase).offsetHSL(0, 0, (Math.random() - 0.5) * 0.08),
       flatShading: true,
     });
 
+    // Round-ish canopy from stacked boxes (RCT2 style)
     const layers = 2 + Math.floor(Math.random() * 2);
     for (let i = 0; i < layers; i++) {
-      const size = 2.5 - i * 0.5 + Math.random() * 0.5;
-      const foliage = new THREE.Mesh(new THREE.BoxGeometry(size, 1.5, size), foliageMat);
-      foliage.position.y = trunkH + i * 1.2;
-      foliage.rotation.y = Math.random() * 0.5;
+      const size = 2.8 - i * 0.6 + Math.random() * 0.4;
+      const foliage = new THREE.Mesh(new THREE.BoxGeometry(size, 1.2, size), foliageMat);
+      foliage.position.y = trunkH + i * 1.0;
       foliage.castShadow = true;
       tree.add(foliage);
     }
@@ -677,19 +693,20 @@ export class World {
   }
 
   createSpawnMarker() {
+    // RCT2-style entrance marker — bright yellow on dirt
     const marker = new THREE.Mesh(
-      new THREE.RingGeometry(1.5, 2, 8),
-      new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+      new THREE.RingGeometry(1.5, 2, 6),
+      new THREE.MeshBasicMaterial({ color: 0xf0d830, transparent: true, opacity: 0.5, side: THREE.DoubleSide })
     );
     marker.rotation.x = -Math.PI / 2;
     marker.position.y = 0.09;
     this.scene.add(marker);
 
-    const signTex = createTextTexture('SPAWN', {
-      fontSize: 16, fontColor: '#ffcc00', bgColor: '#00000088', width: 128, height: 32,
+    const signTex = createTextTexture('PARK ENTRANCE', {
+      fontSize: 14, fontColor: '#1a1a1a', bgColor: '#f0d830', width: 192, height: 32,
     });
     const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.5, 0.4),
+      new THREE.PlaneGeometry(2, 0.4),
       new THREE.MeshBasicMaterial({ map: signTex, transparent: true, depthTest: false })
     );
     sign.position.set(0, 3, 0);
@@ -721,27 +738,28 @@ export class World {
     const h = minimapCanvas.height;
     const scale = w / 120;
 
-    ctx.fillStyle = '#2d5a1e';
+    // RCT2-style minimap: bright green grass
+    ctx.fillStyle = '#48a830';
     ctx.fillRect(0, 0, w, h);
 
-    // Main street
-    ctx.fillStyle = '#7a6b4e';
+    // Main street — sandy brown
+    ctx.fillStyle = '#c8a868';
     const streetTopY = h / 2 - (STREET_START_Z + 4) * scale;
     const streetBotY = h / 2 - (this.streetExtentZ || -50) * scale;
     ctx.fillRect(w / 2 - 3, streetTopY, 6, streetBotY - streetTopY);
 
-    // Houses
+    // Houses — warm brown rooftops
     this.houses.forEach(house => {
       const rx = w / 2 + house.group.position.x * scale;
       const ry = h / 2 - house.group.position.z * scale;
       const size = 3 + house.rooms.length * 2;
-      ctx.fillStyle = '#8c7050';
+      ctx.fillStyle = '#b07830';
       ctx.fillRect(rx - size / 2, ry - size / 2, size, size);
-      ctx.strokeStyle = '#5a4030';
+      ctx.strokeStyle = '#8b5e20';
       ctx.strokeRect(rx - size / 2, ry - size / 2, size, size);
     });
 
-    // Characters
+    // Characters — bright white pixels
     characters.forEach(char => {
       const cx = w / 2 + char.group.position.x * scale;
       const cy = h / 2 - char.group.position.z * scale;
@@ -749,18 +767,14 @@ export class World {
       ctx.fillRect(cx - 1, cy - 1, 2, 2);
     });
 
-    // Camera
+    // Camera — red square
     const camX = w / 2 + camera.position.x * scale;
     const camY = h / 2 - camera.position.z * scale;
-    ctx.fillStyle = '#ff0000';
-    ctx.beginPath();
-    ctx.arc(camX, camY, 3, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fillStyle = '#e03030';
+    ctx.fillRect(camX - 2, camY - 2, 4, 4);
 
-    // Spawn
-    ctx.fillStyle = '#ffcc00';
-    ctx.beginPath();
-    ctx.arc(w / 2, h / 2, 3, 0, Math.PI * 2);
-    ctx.fill();
+    // Spawn — yellow square
+    ctx.fillStyle = '#f0d830';
+    ctx.fillRect(w / 2 - 2, h / 2 - 2, 4, 4);
   }
 }

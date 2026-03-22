@@ -6,6 +6,7 @@ import * as API from './api.js';
 
 // --- State ---
 let scene, camera, renderer, controls, clock;
+let renderTarget, pixelQuad, pixelScene, pixelCamera; // pixelation
 let world;
 let characters = [];
 let websiteId = null;
@@ -30,16 +31,16 @@ const PLAYBACK_DURATION_S = 180; // full range plays in 3 minutes
 const SPEED_OPTIONS = [1, 2, 4, 8];
 let speedIndex = 0;
 
-// OSRS-flavored visitor names
+// RCT2-style guest names
 const NAMES = [
-  'Zezima', 'W00x', 'Iron_Btw', 'GoblinSlyr', 'RuneCrftr',
-  'PKer_420', 'Dharok', 'B0nk_Loot', 'AgilityCpe', 'Barrows99',
-  'Mod_Mark', 'F2p_King', 'Whip_Only', 'Nex_Solo', 'T_Bow_Plz',
-  'Lumby_n00b', 'Varrock1', 'Edge_Pker', 'GE_Flipper', 'Slayer_69',
-  'Corp_Solo', 'Jad_Ez', 'No_Armor', 'SkillTotal', 'Quest_Cape',
-  'Fire_Cape', 'Infernal', 'Dragon_Def', 'Abby_Whip', 'G_Maul_Pk',
-  'Herb_Run', 'Bird_House', 'Sand_Crabs', 'Vorkath_1', 'Zulrah_Bt',
-  'Rng_Based', 'Pray_Flck', 'Max_Cape', 'Bronze_Man', 'UIM_Pain',
+  'Guest 1', 'Guest 2', 'Guest 3', 'Guest 4', 'Guest 5',
+  'Guest 6', 'Guest 7', 'Guest 8', 'Guest 9', 'Guest 10',
+  'Guest 11', 'Guest 12', 'Guest 13', 'Guest 14', 'Guest 15',
+  'Guest 16', 'Guest 17', 'Guest 18', 'Guest 19', 'Guest 20',
+  'Guest 21', 'Guest 22', 'Guest 23', 'Guest 24', 'Guest 25',
+  'Guest 26', 'Guest 27', 'Guest 28', 'Guest 29', 'Guest 30',
+  'Guest 31', 'Guest 32', 'Guest 33', 'Guest 34', 'Guest 35',
+  'Guest 36', 'Guest 37', 'Guest 38', 'Guest 39', 'Guest 40',
 ];
 
 let nameIndex = 0;
@@ -205,55 +206,105 @@ function requeueSessions() {
   recent.forEach(s => spawnVisitorWithJourney(s));
 }
 
+// --- Pixelation config ---
+const PIXEL_SCALE = 3; // render at 1/3 resolution then upscale — chunky RCT2 pixels
+
+function setupPixelation() {
+  const w = Math.floor(window.innerWidth / PIXEL_SCALE);
+  const h = Math.floor(window.innerHeight / PIXEL_SCALE);
+
+  if (renderTarget) renderTarget.dispose();
+  renderTarget = new THREE.WebGLRenderTarget(w, h, {
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    format: THREE.RGBAFormat,
+  });
+
+  if (!pixelScene) {
+    pixelScene = new THREE.Scene();
+    pixelCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    pixelQuad = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      new THREE.MeshBasicMaterial({ map: renderTarget.texture })
+    );
+    pixelScene.add(pixelQuad);
+  } else {
+    pixelQuad.material.map = renderTarget.texture;
+  }
+}
+
 // --- Three.js Setup ---
 function initScene() {
   scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x87CEEB, 60, 100);
+  scene.fog = new THREE.Fog(0x88c070, 60, 120); // RCT2 green-tinted fog
 
-  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
-  camera.position.set(15, 25, 35);
-  camera.lookAt(0, 0, 0);
+  // Isometric orthographic camera (RCT2-style dimetric)
+  const aspect = window.innerWidth / window.innerHeight;
+  const frustum = 28; // zoom level
+  camera = new THREE.OrthographicCamera(
+    -frustum * aspect, frustum * aspect,
+    frustum, -frustum,
+    0.1, 300
+  );
+  // Classic isometric angle: ~35.264° elevation, 45° azimuth
+  const isoDistance = 80;
+  camera.position.set(isoDistance, isoDistance * 0.8, isoDistance);
+  camera.lookAt(0, 0, -5);
 
   renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById('viewport'),
-    antialias: true,
+    antialias: false, // no AA — we want crisp pixels
   });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setPixelRatio(1); // force 1:1 for pixel art
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-  renderer.setClearColor(0x87CEEB);
+  renderer.setClearColor(0x88c070); // RCT2 green sky
+
+  // Set up pixelation render target
+  setupPixelation();
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.maxPolarAngle = Math.PI / 2.2;
-  controls.minDistance = 8;
-  controls.maxDistance = 80;
+  controls.enableRotate = true; // allow rotation for iso views
+  controls.maxPolarAngle = Math.PI / 2.5;
+  controls.minPolarAngle = Math.PI / 6;
+  controls.minZoom = 0.3;
+  controls.maxZoom = 3;
   controls.target.set(0, 0, -5);
+  controls.enablePan = true;
+  controls.panSpeed = 1.5;
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+  // Brighter, flatter lighting for RCT2 look
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
 
-  const sun = new THREE.DirectionalLight(0xfff5e0, 1.2);
-  sun.position.set(30, 40, 20);
+  const sun = new THREE.DirectionalLight(0xfffff0, 1.0);
+  sun.position.set(30, 50, 20);
   sun.castShadow = true;
   sun.shadow.mapSize.width = 2048;
   sun.shadow.mapSize.height = 2048;
   sun.shadow.camera.near = 0.5;
-  sun.shadow.camera.far = 120;
-  sun.shadow.camera.left = -50;
-  sun.shadow.camera.right = 50;
-  sun.shadow.camera.top = 50;
-  sun.shadow.camera.bottom = -50;
+  sun.shadow.camera.far = 150;
+  sun.shadow.camera.left = -60;
+  sun.shadow.camera.right = 60;
+  sun.shadow.camera.top = 60;
+  sun.shadow.camera.bottom = -60;
   scene.add(sun);
 
-  scene.add(new THREE.HemisphereLight(0x87CEEB, 0x3a7d30, 0.3));
+  scene.add(new THREE.HemisphereLight(0x88c070, 0x4a8030, 0.4));
 
   window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
+    const a = window.innerWidth / window.innerHeight;
+    const f = 28;
+    camera.left = -f * a;
+    camera.right = f * a;
+    camera.top = f;
+    camera.bottom = -f;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    setupPixelation();
   });
 
   const raycaster = new THREE.Raycaster();
@@ -294,7 +345,7 @@ function spawnVisitorWithJourney(session) {
   // Events only fire AFTER the character physically arrives at the room
   char.onArrivedAtRoom = (c, step) => {
     const shortPage = step.page === '/' ? 'Home' : step.page;
-    addChatMessage(name, 'entered', shortPage);
+    addChatMessage(name, 'is looking at', shortPage);
     c.showChatBubble(shortPage);
 
     // Schedule events during the idle/wander period (after arrival)
@@ -348,7 +399,7 @@ function spawnVisitorWithJourney(session) {
     console.log(`Visitor ${name}: spawned OK, waypoints=${char.waypoints.length}, walking=${char.isWalking}`);
   }
 
-  addChatMessage(name, 'logged in', siteName || 'the world');
+  addChatMessage(name, 'entered the park', '');
   return char;
 }
 
@@ -541,7 +592,7 @@ function updateTimeline(delta) {
     timeline.sessionQueue = [...(timeline.allSessions || [])];
     clearAllCharacters();
     document.getElementById('chat-messages').innerHTML = '';
-    addChatMessage('System', 'timeline', 'restarting...');
+    addChatMessage('Park', 'new day', 'starting...');
   }
 
   // Spawn sessions whose spawnAt <= current timeline position
@@ -574,7 +625,7 @@ function updateSimulation(delta) {
 
     if (char.isDead) {
       console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed (pos: ${char.group.position.x.toFixed(1)},${char.group.position.z.toFixed(1)}, leaving=${char.isLeaving})`, 'color:#ef9a9a');
-      addChatMessage(char.visitorName || 'Visitor', 'logged out', '');
+      addChatMessage(char.visitorName || 'Guest', 'left the park', '');
       if (world) {
         for (const room of world.rooms) {
           const idx = room.characters.indexOf(char);
@@ -622,7 +673,11 @@ async function main() {
       world.updateMinimap(minimapCanvas, camera, characters);
     }
 
+    // Pixelated rendering: render scene to low-res target, then blit fullscreen
+    renderer.setRenderTarget(renderTarget);
     renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    renderer.render(pixelScene, pixelCamera);
   });
 }
 
