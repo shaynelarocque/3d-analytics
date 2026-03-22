@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>3D Analytics Viewer</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="viewport"></canvas>
+
+  <!-- OSRS-style UI overlay -->
+  <div id="ui-overlay">
+    <!-- Top bar -->
+    <div id="top-bar">
+      <div id="site-name">Loading...</div>
+      <div id="active-count">
+        <span class="pulse-dot"></span>
+        <span id="active-num">0</span> online
+      </div>
+    </div>
+
+    <!-- Minimap -->
+    <div id="minimap-frame">
+      <canvas id="minimap" width="160" height="160"></canvas>
+      <div id="minimap-label">World Map</div>
+    </div>
+
+    <!-- Stats panel -->
+    <div id="stats-panel">
+      <div class="panel-title">Visitor Log</div>
+      <div id="stats-content">
+        <div class="stat-row">
+          <span class="stat-label">Today</span>
+          <span class="stat-value" id="stat-today">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Pages</span>
+          <span class="stat-value" id="stat-pages">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Bounces</span>
+          <span class="stat-value" id="stat-bounces">0</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Avg Time</span>
+          <span class="stat-value" id="stat-time">0s</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat / activity log -->
+    <div id="chat-log">
+      <div class="panel-title">Activity</div>
+      <div id="chat-messages"></div>
+    </div>
+
+    <!-- Room info popup -->
+    <div id="room-info" class="hidden">
+      <div class="panel-title" id="room-info-title">Room</div>
+      <div id="room-info-content"></div>
+    </div>
+  </div>
+
+  <!-- Loading screen -->
+  <div id="loading-screen">
+    <div id="loading-content">
+      <div id="loading-title">3D Analytics</div>
+      <div id="loading-subtitle">Connecting to Umami...</div>
+      <div id="loading-bar-outer">
+        <div id="loading-bar-inner"></div>
+      </div>
+      <div id="loading-tip">Tip: Click on buildings to see page details</div>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
