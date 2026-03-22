@@ -1,31 +1,28 @@
 import * as THREE from 'three';
+import { PathGraph } from './pathfinding.js';
 
-const STONE_COLOR = 0x8c8c8c;
+const STONE = 0x8c8c8c;
 const STONE_DARK = 0x6e6e6e;
-const WOOD_COLOR = 0x8b6914;
+const WOOD = 0x8b6914;
 const WOOD_DARK = 0x6b4f12;
-const ROOF_COLOR = 0x9e3b2c;
-const GRASS_COLOR = 0x3a7d30;
-const DIRT_COLOR = 0x9e8b6e;
+const GRASS = 0x3a7d30;
+const DIRT = 0x9e8b6e;
 
-function stoneMat(color = STONE_COLOR) {
+const ROOM_W = 6;
+const ROOM_D = 6;
+const CORRIDOR_D = 3;
+const WALL_H = 3.5;
+const WALL_THICK = 0.3;
+const INNER_WALL = 0.15;
+const DOOR_W = 2;
+const DOOR_H = 2.8;
+
+function mat(color) {
   return new THREE.MeshLambertMaterial({ color, flatShading: true });
 }
 
-function woodMat(color = WOOD_COLOR) {
-  return new THREE.MeshLambertMaterial({ color, flatShading: true });
-}
-
-function createTextTexture(text, options = {}) {
-  const {
-    fontSize = 20,
-    fontColor = '#ffcc00',
-    bgColor = '#3a2e1eee',
-    width = 256,
-    height = 64,
-    font = 'bold monospace',
-  } = options;
-
+function createTextTexture(text, opts = {}) {
+  const { fontSize = 20, fontColor = '#ffcc00', bgColor = '#3a2e1eee', width = 256, height = 64 } = opts;
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
@@ -33,28 +30,24 @@ function createTextTexture(text, options = {}) {
 
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, width, height);
-
-  // Border
   ctx.strokeStyle = '#5a4d3a';
   ctx.lineWidth = 3;
   ctx.strokeRect(2, 2, width - 4, height - 4);
 
   ctx.fillStyle = fontColor;
-  ctx.font = `${fontSize}px ${font}`;
+  ctx.font = `${fontSize}px bold monospace`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // Truncate long text
-  let displayText = text;
-  while (ctx.measureText(displayText).width > width - 20 && displayText.length > 3) {
-    displayText = displayText.slice(0, -4) + '...';
+  let display = text;
+  while (ctx.measureText(display).width > width - 20 && display.length > 3) {
+    display = display.slice(0, -4) + '...';
   }
-  ctx.fillText(displayText, width / 2, height / 2);
+  ctx.fillText(display, width / 2, height / 2);
 
-  // Black text shadow effect
   ctx.globalCompositeOperation = 'destination-over';
   ctx.fillStyle = '#000';
-  ctx.fillText(displayText, width / 2 + 1, height / 2 + 1);
+  ctx.fillText(display, width / 2 + 1, height / 2 + 1);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.minFilter = THREE.NearestFilter;
@@ -62,55 +55,367 @@ function createTextTexture(text, options = {}) {
   return texture;
 }
 
+// --- Data classes ---
+
 export class Room {
-  constructor(name, position, visitorCount) {
+  constructor(name, worldPosition, visitorCount, nodeId, bounds) {
     this.name = name;
-    this.position = position;
+    this.position = worldPosition;
     this.visitorCount = visitorCount;
-    this.group = new THREE.Group();
-    this.group.position.copy(position);
-    this.group.userData = { type: 'room', room: this };
-    this.doorPosition = new THREE.Vector3(
-      position.x,
-      0,
-      position.z + 4.5
-    );
+    this.nodeId = nodeId; // pathfinding node ID
+    this.bounds = bounds; // {minX, maxX, minZ, maxZ} for wander area
     this.characters = [];
   }
+}
 
-  get doorWorldPos() {
-    return this.doorPosition;
+class House {
+  constructor(name, pageEntries) {
+    this.name = name;
+    this.pages = pageEntries; // [{x: url, y: count}, ...]
+    this.rooms = [];
+    this.group = new THREE.Group();
+    this.doorNodeId = null;
   }
 }
+
+// --- Group pages into houses by URL prefix ---
+
+function groupPagesIntoHouses(pages) {
+  const groups = new Map();
+
+  for (const page of pages) {
+    const url = page.x;
+    const parts = url.split('/').filter(Boolean);
+
+    let key, name;
+    if (parts.length === 0) {
+      key = '/';
+      name = 'Home';
+    } else {
+      key = '/' + parts[0];
+      name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+    }
+
+    if (!groups.has(key)) {
+      groups.set(key, { name, pages: [] });
+    }
+    groups.get(key).pages.push(page);
+  }
+
+  return Array.from(groups.values()).map(g => new House(g.name, g.pages));
+}
+
+// --- World ---
 
 export class World {
   constructor(scene) {
     this.scene = scene;
-    this.rooms = [];
+    this.rooms = []; // flat list of all rooms
+    this.houses = [];
     this.clickableObjects = [];
+    this.pathGraph = new PathGraph();
   }
 
   build(pages) {
     this.createGround();
     this.createSky();
-    this.createRooms(pages);
+
+    // Set up core path nodes
+    this.pathGraph.addNode('spawn', new THREE.Vector3(0, 0, 8));
+    this.pathGraph.addNode('hub', new THREE.Vector3(0, 0, 0));
+    this.pathGraph.addNode('exit', new THREE.Vector3(0, 0, 40));
+    this.pathGraph.addEdge('spawn', 'hub');
+    this.pathGraph.addEdge('spawn', 'exit');
+
+    this.houses = groupPagesIntoHouses(pages);
+    this.layoutHouses();
     this.createDecorations();
+
     return this.rooms;
   }
 
+  findRoom(pageName) {
+    return this.rooms.find(r => r.name === pageName);
+  }
+
+  layoutHouses() {
+    const count = this.houses.length;
+    if (count === 0) return;
+
+    const cols = Math.ceil(Math.sqrt(count));
+    const spacing = 18;
+    const offsetX = -(cols - 1) * spacing / 2;
+    const startZ = -12;
+
+    this.houses.forEach((house, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = offsetX + col * spacing;
+      const z = startZ - row * spacing;
+
+      house.group.position.set(x, 0, z);
+      this.buildHouse(house);
+      this.createPath(new THREE.Vector3(0, 0, 0), new THREE.Vector3(x, 0, z));
+      this.scene.add(house.group);
+    });
+  }
+
+  buildHouse(house) {
+    const n = house.pages.length;
+    const cols = Math.min(n, 5);
+    const hasCorr = n > 1;
+    const totalW = cols * ROOM_W;
+    const totalD = ROOM_D + (hasCorr ? CORRIDOR_D : 0);
+    const halfW = totalW / 2;
+    const halfD = totalD / 2;
+    const g = house.group;
+    const housePos = house.group.position;
+
+    const stoneMat = mat(STONE);
+    const stoneDkMat = mat(STONE_DARK);
+    const floorMat = mat(0x9e8b6e);
+
+    // Floor
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(totalW, 0.15, totalD), floorMat);
+    floor.position.y = 0.075;
+    floor.receiveShadow = true;
+    g.add(floor);
+
+    // Back wall
+    this._addWall(g, totalW, WALL_H, WALL_THICK, 0, WALL_H / 2, -halfD + WALL_THICK / 2, stoneMat);
+
+    // Left wall
+    this._addWall(g, WALL_THICK, WALL_H, totalD, -halfW + WALL_THICK / 2, WALL_H / 2, 0, stoneMat);
+
+    // Right wall
+    this._addWall(g, WALL_THICK, WALL_H, totalD, halfW - WALL_THICK / 2, WALL_H / 2, 0, stoneMat);
+
+    // Front wall with main door (centered)
+    const frontZ = halfD - WALL_THICK / 2;
+    const sideW = (totalW - DOOR_W) / 2;
+    if (sideW > 0.01) {
+      this._addWall(g, sideW, WALL_H, WALL_THICK, -halfW + sideW / 2, WALL_H / 2, frontZ, stoneMat);
+      this._addWall(g, sideW, WALL_H, WALL_THICK, halfW - sideW / 2, WALL_H / 2, frontZ, stoneMat);
+    }
+    // Above door
+    this._addWall(g, DOOR_W, WALL_H - DOOR_H, WALL_THICK, 0, DOOR_H + (WALL_H - DOOR_H) / 2, frontZ, stoneMat);
+    // Door frame
+    this._addWall(g, 0.12, DOOR_H, WALL_THICK + 0.05, -DOOR_W / 2, DOOR_H / 2, frontZ, stoneDkMat);
+    this._addWall(g, 0.12, DOOR_H, WALL_THICK + 0.05, DOOR_W / 2, DOOR_H / 2, frontZ, stoneDkMat);
+    this._addWall(g, DOOR_W + 0.24, 0.12, WALL_THICK + 0.05, 0, DOOR_H, frontZ, stoneDkMat);
+
+    // House name sign above door
+    const signTex = createTextTexture(house.name, { fontSize: 22, width: 256, height: 48 });
+    const signMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.5, 0.5),
+      new THREE.MeshBasicMaterial({ map: signTex, transparent: true })
+    );
+    signMesh.position.set(0, DOOR_H + 0.5, frontZ + 0.2);
+    g.add(signMesh);
+
+    // Door path node (just outside the door)
+    const doorWorldPos = new THREE.Vector3(housePos.x, 0, housePos.z + halfD + 0.8);
+    house.doorNodeId = `door:${house.name}`;
+    this.pathGraph.addNode(house.doorNodeId, doorWorldPos);
+    this.pathGraph.addEdge('hub', house.doorNodeId);
+
+    // Inside-door node (just inside the door)
+    const insideDoorId = `inside:${house.name}`;
+    const insideDoorPos = new THREE.Vector3(housePos.x, 0, housePos.z + halfD - 1);
+    this.pathGraph.addNode(insideDoorId, insideDoorPos);
+    this.pathGraph.addEdge(house.doorNodeId, insideDoorId);
+
+    if (hasCorr) {
+      // --- Multi-room house with corridor ---
+      const corrZ = halfD - CORRIDOR_D / 2; // corridor center Z (local)
+      const roomAreaZ = halfD - CORRIDOR_D; // where corridor meets rooms (local)
+
+      // Corridor-room divider wall (with door openings per room)
+      for (let i = 0; i < cols; i++) {
+        const cx = -halfW + i * ROOM_W + ROOM_W / 2;
+        const segW = (ROOM_W - DOOR_W) / 2;
+
+        // Left segment
+        this._addWall(g, segW, WALL_H, INNER_WALL,
+          cx - ROOM_W / 2 + segW / 2, WALL_H / 2, roomAreaZ, stoneMat);
+        // Right segment
+        this._addWall(g, segW, WALL_H, INNER_WALL,
+          cx + ROOM_W / 2 - segW / 2, WALL_H / 2, roomAreaZ, stoneMat);
+        // Above door
+        this._addWall(g, DOOR_W, WALL_H - DOOR_H, INNER_WALL,
+          cx, DOOR_H + (WALL_H - DOOR_H) / 2, roomAreaZ, stoneMat);
+      }
+
+      // Vertical divider walls between rooms (from corridor-room wall to back wall)
+      for (let i = 1; i < cols; i++) {
+        const divX = -halfW + i * ROOM_W;
+        const divLen = ROOM_D;
+        const divZ = -halfD + divLen / 2;
+        this._addWall(g, INNER_WALL, WALL_H, divLen, divX, WALL_H / 2, divZ, stoneMat);
+      }
+
+      // Corridor path nodes (one per room column)
+      const corrNodes = [];
+      for (let i = 0; i < cols; i++) {
+        const cx = -halfW + i * ROOM_W + ROOM_W / 2;
+        const nodeId = `corr:${house.name}:${i}`;
+        const worldPos = new THREE.Vector3(housePos.x + cx, 0, housePos.z + corrZ);
+        this.pathGraph.addNode(nodeId, worldPos);
+        corrNodes.push(nodeId);
+
+        // Connect adjacent corridor nodes
+        if (i > 0) {
+          this.pathGraph.addEdge(corrNodes[i - 1], nodeId);
+        }
+      }
+
+      // Connect inside-door to nearest corridor node (middle column)
+      const midCol = Math.floor(cols / 2);
+      this.pathGraph.addEdge(insideDoorId, corrNodes[midCol]);
+      // Also connect to col 0 and last if different, for wider houses
+      if (midCol !== 0) this.pathGraph.addEdge(insideDoorId, corrNodes[0]);
+      if (midCol !== cols - 1) this.pathGraph.addEdge(insideDoorId, corrNodes[cols - 1]);
+
+      // Create rooms
+      for (let i = 0; i < n; i++) {
+        const col = i % cols;
+        const cx = -halfW + col * ROOM_W + ROOM_W / 2;
+        const roomCenterZ = -halfD + ROOM_D / 2;
+
+        const roomNodeId = `room:${house.pages[i].x}`;
+        const worldPos = new THREE.Vector3(housePos.x + cx, 0, housePos.z + roomCenterZ);
+        this.pathGraph.addNode(roomNodeId, worldPos);
+        this.pathGraph.addEdge(corrNodes[col], roomNodeId);
+
+        const bounds = {
+          minX: housePos.x + cx - ROOM_W / 2 + 0.5,
+          maxX: housePos.x + cx + ROOM_W / 2 - 0.5,
+          minZ: housePos.z - halfD + 0.5,
+          maxZ: housePos.z + roomAreaZ - 0.5,
+        };
+
+        const room = new Room(house.pages[i].x, worldPos, house.pages[i].y, roomNodeId, bounds);
+        house.rooms.push(room);
+        this.rooms.push(room);
+
+        // Room label on back wall
+        const labelTex = createTextTexture(this._shortName(house.pages[i].x), {
+          fontSize: 14, width: 192, height: 32, fontColor: '#00ff00',
+        });
+        const label = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.8, 0.35),
+          new THREE.MeshBasicMaterial({ map: labelTex, transparent: true })
+        );
+        label.position.set(cx, WALL_H - 0.5, -halfD + WALL_THICK + 0.05);
+        g.add(label);
+
+        // Visitor count
+        const countTex = createTextTexture(`${house.pages[i].y} visits`, {
+          fontSize: 12, fontColor: '#ffcc00', width: 128, height: 24,
+        });
+        const countLabel = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.2, 0.25),
+          new THREE.MeshBasicMaterial({ map: countTex, transparent: true })
+        );
+        countLabel.position.set(cx, WALL_H - 1, -halfD + WALL_THICK + 0.05);
+        g.add(countLabel);
+
+        // Room light
+        const light = new THREE.PointLight(0xffa500, 0.4, 8);
+        light.position.set(cx, 2.5, roomCenterZ);
+        g.add(light);
+      }
+    } else {
+      // --- Single-room house ---
+      const roomNodeId = `room:${house.pages[0].x}`;
+      const worldPos = new THREE.Vector3(housePos.x, 0, housePos.z);
+      this.pathGraph.addNode(roomNodeId, worldPos);
+      this.pathGraph.addEdge(insideDoorId, roomNodeId);
+
+      const bounds = {
+        minX: housePos.x - halfW + 0.5,
+        maxX: housePos.x + halfW - 0.5,
+        minZ: housePos.z - halfD + 0.5,
+        maxZ: housePos.z + halfD - 1,
+      };
+
+      const room = new Room(house.pages[0].x, worldPos, house.pages[0].y, roomNodeId, bounds);
+      house.rooms.push(room);
+      this.rooms.push(room);
+
+      // Room label
+      const labelTex = createTextTexture(this._shortName(house.pages[0].x), {
+        fontSize: 14, width: 192, height: 32, fontColor: '#00ff00',
+      });
+      const label = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.8, 0.35),
+        new THREE.MeshBasicMaterial({ map: labelTex, transparent: true })
+      );
+      label.position.set(0, WALL_H - 0.5, -halfD + WALL_THICK + 0.05);
+      g.add(label);
+
+      // Count
+      const countTex = createTextTexture(`${house.pages[0].y} visits`, {
+        fontSize: 12, fontColor: '#ffcc00', width: 128, height: 24,
+      });
+      const countLabel = new THREE.Mesh(
+        new THREE.PlaneGeometry(1.2, 0.25),
+        new THREE.MeshBasicMaterial({ map: countTex, transparent: true })
+      );
+      countLabel.position.set(0, WALL_H - 1, -halfD + WALL_THICK + 0.05);
+      g.add(countLabel);
+
+      // Light
+      const light = new THREE.PointLight(0xffa500, 0.4, 8);
+      light.position.set(0, 2.5, 0);
+      g.add(light);
+
+      // Window on left wall
+      const winMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ color: 0x1a1a2e, transparent: true, opacity: 0.7 })
+      );
+      winMesh.position.set(-halfW + 0.01, WALL_H / 2 + 0.5, 0);
+      winMesh.rotation.y = Math.PI / 2;
+      g.add(winMesh);
+    }
+
+    // Make all meshes clickable
+    g.traverse((child) => {
+      if (child.isMesh) {
+        this.clickableObjects.push(child);
+      }
+    });
+  }
+
+  _addWall(group, w, h, d, x, y, z, material) {
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+    wall.position.set(x, y, z);
+    wall.castShadow = true;
+    group.add(wall);
+    return wall;
+  }
+
+  _shortName(url) {
+    if (url === '/') return 'Home';
+    const parts = url.split('/').filter(Boolean);
+    return parts[parts.length - 1] || url;
+  }
+
   createGround() {
-    // Main grass
     const groundGeo = new THREE.PlaneGeometry(200, 200, 20, 20);
-    // Slightly randomize vertices for terrain feel
     const pos = groundGeo.attributes.position;
     for (let i = 0; i < pos.count; i++) {
-      pos.setZ(i, pos.getZ(i) + (Math.random() - 0.5) * 0.3);
+      pos.setZ(i, pos.getZ(i) + (Math.random() - 0.5) * 0.15);
     }
     groundGeo.computeVertexNormals();
 
     const groundMat = new THREE.MeshLambertMaterial({
-      color: GRASS_COLOR,
+      color: GRASS,
       flatShading: true,
+      polygonOffset: true,
+      polygonOffsetFactor: 2,
+      polygonOffsetUnits: 2,
     });
     const ground = new THREE.Mesh(groundGeo, groundMat);
     ground.rotation.x = -Math.PI / 2;
@@ -119,52 +424,32 @@ export class World {
 
     // Central dirt area
     const dirtGeo = new THREE.CircleGeometry(8, 12);
-    const dirtMat = new THREE.MeshLambertMaterial({ color: DIRT_COLOR });
+    const dirtMat = new THREE.MeshLambertMaterial({ color: DIRT });
     const dirt = new THREE.Mesh(dirtGeo, dirtMat);
     dirt.rotation.x = -Math.PI / 2;
-    dirt.position.y = 0.02;
+    dirt.position.y = 0.08;
     this.scene.add(dirt);
   }
 
   createSky() {
     const skyGeo = new THREE.SphereGeometry(95, 16, 16);
-    const skyMat = new THREE.MeshBasicMaterial({
-      color: 0x87CEEB,
-      side: THREE.BackSide,
-    });
-    const sky = new THREE.Mesh(skyGeo, skyMat);
-    this.scene.add(sky);
+    const skyMat = new THREE.MeshBasicMaterial({ color: 0x87CEEB, side: THREE.BackSide });
+    this.scene.add(new THREE.Mesh(skyGeo, skyMat));
 
-    // Simple clouds
     for (let i = 0; i < 12; i++) {
       const cloudGroup = new THREE.Group();
-      const cloudMat = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.7,
-      });
+      const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.7 });
 
       for (let j = 0; j < 3 + Math.floor(Math.random() * 3); j++) {
         const size = 2 + Math.random() * 3;
-        const cloudPart = new THREE.Mesh(
-          new THREE.BoxGeometry(size, size * 0.4, size * 0.8),
-          cloudMat
-        );
-        cloudPart.position.set(
-          (Math.random() - 0.5) * 4,
-          (Math.random() - 0.5) * 0.5,
-          (Math.random() - 0.5) * 2
-        );
-        cloudGroup.add(cloudPart);
+        const part = new THREE.Mesh(new THREE.BoxGeometry(size, size * 0.4, size * 0.8), cloudMat);
+        part.position.set((Math.random() - 0.5) * 4, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 2);
+        cloudGroup.add(part);
       }
 
       const angle = Math.random() * Math.PI * 2;
       const radius = 40 + Math.random() * 40;
-      cloudGroup.position.set(
-        Math.cos(angle) * radius,
-        25 + Math.random() * 15,
-        Math.sin(angle) * radius
-      );
+      cloudGroup.position.set(Math.cos(angle) * radius, 25 + Math.random() * 15, Math.sin(angle) * radius);
       cloudGroup.userData.cloudSpeed = 0.1 + Math.random() * 0.2;
       cloudGroup.userData.cloudAngle = angle;
       cloudGroup.userData.cloudRadius = radius;
@@ -172,235 +457,23 @@ export class World {
     }
   }
 
-  createRooms(pages) {
-    if (!pages || pages.length === 0) return;
-
-    const cols = Math.ceil(Math.sqrt(pages.length));
-    const spacing = 14;
-    const offsetX = -(cols - 1) * spacing / 2;
-    const offsetZ = -15;
-
-    pages.forEach((page, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const x = offsetX + col * spacing;
-      const z = offsetZ - row * spacing;
-
-      const pos = new THREE.Vector3(x, 0, z);
-      const room = new Room(page.x, pos, page.y);
-      this.buildRoom(room);
-      this.createPath(new THREE.Vector3(0, 0, 0), pos);
-      this.rooms.push(room);
-    });
-  }
-
-  buildRoom(room) {
-    const g = room.group;
-
-    // Determine building size based on visitor count
-    const scale = Math.min(1 + room.visitorCount / 200, 1.5);
-    const w = 6 * scale;
-    const h = 4;
-    const d = 6 * scale;
-    const wallThick = 0.3;
-    const doorW = 2;
-    const doorH = 3;
-
-    const stone = stoneMat();
-    const stoneDk = stoneMat(STONE_DARK);
-
-    // Floor
-    const floorGeo = new THREE.BoxGeometry(w, 0.15, d);
-    const floor = new THREE.Mesh(floorGeo, woodMat(0x9e8b6e));
-    floor.position.y = 0.075;
-    floor.receiveShadow = true;
-    g.add(floor);
-
-    // Back wall
-    const backWall = new THREE.Mesh(
-      new THREE.BoxGeometry(w, h, wallThick), stone
-    );
-    backWall.position.set(0, h / 2, -d / 2 + wallThick / 2);
-    backWall.castShadow = true;
-    g.add(backWall);
-
-    // Left wall
-    const leftWall = new THREE.Mesh(
-      new THREE.BoxGeometry(wallThick, h, d), stone
-    );
-    leftWall.position.set(-w / 2 + wallThick / 2, h / 2, 0);
-    leftWall.castShadow = true;
-    g.add(leftWall);
-
-    // Right wall
-    const rightWall = new THREE.Mesh(
-      new THREE.BoxGeometry(wallThick, h, d), stone
-    );
-    rightWall.position.set(w / 2 - wallThick / 2, h / 2, 0);
-    rightWall.castShadow = true;
-    g.add(rightWall);
-
-    // Front wall (with door opening)
-    const sideW = (w - doorW) / 2;
-    const frontZ = d / 2 - wallThick / 2;
-
-    const frontLeft = new THREE.Mesh(
-      new THREE.BoxGeometry(sideW, h, wallThick), stone
-    );
-    frontLeft.position.set(-w / 2 + sideW / 2, h / 2, frontZ);
-    frontLeft.castShadow = true;
-    g.add(frontLeft);
-
-    const frontRight = new THREE.Mesh(
-      new THREE.BoxGeometry(sideW, h, wallThick), stone
-    );
-    frontRight.position.set(w / 2 - sideW / 2, h / 2, frontZ);
-    frontRight.castShadow = true;
-    g.add(frontRight);
-
-    // Above door
-    const aboveDoor = new THREE.Mesh(
-      new THREE.BoxGeometry(doorW, h - doorH, wallThick), stone
-    );
-    aboveDoor.position.set(0, doorH + (h - doorH) / 2, frontZ);
-    g.add(aboveDoor);
-
-    // Door frame (darker stone)
-    const frameThick = 0.15;
-    const leftFrame = new THREE.Mesh(
-      new THREE.BoxGeometry(frameThick, doorH, wallThick + 0.05), stoneDk
-    );
-    leftFrame.position.set(-doorW / 2, doorH / 2, frontZ);
-    g.add(leftFrame);
-
-    const rightFrame = new THREE.Mesh(
-      new THREE.BoxGeometry(frameThick, doorH, wallThick + 0.05), stoneDk
-    );
-    rightFrame.position.set(doorW / 2, doorH / 2, frontZ);
-    g.add(rightFrame);
-
-    const topFrame = new THREE.Mesh(
-      new THREE.BoxGeometry(doorW + frameThick * 2, frameThick, wallThick + 0.05), stoneDk
-    );
-    topFrame.position.set(0, doorH, frontZ);
-    g.add(topFrame);
-
-    // Peaked roof
-    const roofHeight = 2;
-    const roofOverhang = 0.8;
-    const roofGeo = new THREE.BufferGeometry();
-    const rw = w / 2 + roofOverhang;
-    const rd = d / 2 + roofOverhang;
-    const vertices = new Float32Array([
-      // Left slope
-      -rw, h, rd,   0, h + roofHeight, rd,   -rw, h, -rd,
-      0, h + roofHeight, rd,   0, h + roofHeight, -rd,   -rw, h, -rd,
-      // Right slope
-      rw, h, rd,   rw, h, -rd,   0, h + roofHeight, rd,
-      0, h + roofHeight, rd,   rw, h, -rd,   0, h + roofHeight, -rd,
-      // Front triangle
-      -rw, h, rd,   0, h + roofHeight, rd,   rw, h, rd,
-      // Back triangle
-      -rw, h, -rd,   rw, h, -rd,   0, h + roofHeight, -rd,
-    ]);
-    roofGeo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-    roofGeo.computeVertexNormals();
-
-    const roofMat = new THREE.MeshLambertMaterial({
-      color: ROOF_COLOR,
-      flatShading: true,
-    });
-    const roof = new THREE.Mesh(roofGeo, roofMat);
-    roof.castShadow = true;
-    g.add(roof);
-
-    // Sign above door
-    const signTexture = createTextTexture(room.name, {
-      fontSize: 18,
-      width: 256,
-      height: 48,
-    });
-    const signGeo = new THREE.PlaneGeometry(2.5, 0.5);
-    const signMat = new THREE.MeshBasicMaterial({
-      map: signTexture,
-      transparent: true,
-    });
-    const sign = new THREE.Mesh(signGeo, signMat);
-    sign.position.set(0, doorH + 0.5, frontZ + 0.2);
-    g.add(sign);
-
-    // Visitor count sign
-    const countTexture = createTextTexture(`${room.visitorCount} visits`, {
-      fontSize: 14,
-      fontColor: '#00ff00',
-      width: 128,
-      height: 32,
-    });
-    const countGeo = new THREE.PlaneGeometry(1.5, 0.35);
-    const countMat = new THREE.MeshBasicMaterial({
-      map: countTexture,
-      transparent: true,
-    });
-    const countSign = new THREE.Mesh(countGeo, countMat);
-    countSign.position.set(0, doorH + 1.1, frontZ + 0.2);
-    g.add(countSign);
-
-    // Window on left wall (just a dark square)
-    const windowGeo = new THREE.PlaneGeometry(1, 1);
-    const windowMat = new THREE.MeshBasicMaterial({
-      color: 0x1a1a2e,
-      transparent: true,
-      opacity: 0.7,
-    });
-    const windowMesh = new THREE.Mesh(windowGeo, windowMat);
-    windowMesh.position.set(-w / 2 + 0.01, h / 2 + 0.5, 0);
-    windowMesh.rotation.y = Math.PI / 2;
-    g.add(windowMesh);
-
-    // Window frame
-    const wfGeo = new THREE.BoxGeometry(0.08, 1.1, 0.08);
-    const wfMat = woodMat(WOOD_DARK);
-    const wf1 = new THREE.Mesh(wfGeo, wfMat);
-    wf1.position.set(-w / 2 + 0.01, h / 2 + 0.5, 0);
-    g.add(wf1);
-
-    // Light inside room (warm glow)
-    const light = new THREE.PointLight(0xffa500, 0.5, 8);
-    light.position.set(0, 2.5, 0);
-    g.add(light);
-
-    // Add all meshes to clickable list
-    g.traverse((child) => {
-      if (child.isMesh) {
-        this.clickableObjects.push(child);
-      }
-    });
-
-    this.scene.add(g);
-  }
-
   createPath(from, to) {
     const dir = new THREE.Vector3().subVectors(to, from);
     const length = dir.length();
     dir.normalize();
 
-    const pathWidth = 1.5;
     const segments = Math.ceil(length / 2);
-
     for (let i = 0; i < segments; i++) {
       const t = i / segments;
       const pos = new THREE.Vector3().lerpVectors(from, to, t);
-      pos.y = 0.03;
+      pos.y = 0.1;
 
-      const segGeo = new THREE.BoxGeometry(
-        pathWidth + Math.random() * 0.5,
-        0.02,
-        2.2
+      const seg = new THREE.Mesh(
+        new THREE.BoxGeometry(1.5 + Math.random() * 0.3, 0.05, 2.2),
+        new THREE.MeshLambertMaterial({
+          color: new THREE.Color(DIRT).offsetHSL(0, 0, (Math.random() - 0.5) * 0.05),
+        })
       );
-      const segMat = new THREE.MeshLambertMaterial({
-        color: new THREE.Color(DIRT_COLOR).offsetHSL(0, 0, (Math.random() - 0.5) * 0.05),
-      });
-      const seg = new THREE.Mesh(segGeo, segMat);
       seg.position.copy(pos);
       seg.rotation.y = Math.atan2(dir.x, dir.z);
       seg.receiveShadow = true;
@@ -409,36 +482,23 @@ export class World {
   }
 
   createDecorations() {
-    // Trees scattered around
-    const treePositions = [];
     for (let i = 0; i < 25; i++) {
       const angle = Math.random() * Math.PI * 2;
       const dist = 25 + Math.random() * 55;
       const x = Math.cos(angle) * dist;
       const z = Math.sin(angle) * dist;
-      // Avoid placing too close to rooms
-      const tooClose = this.rooms.some(r =>
-        Math.abs(r.position.x - x) < 10 && Math.abs(r.position.z - z) < 10
+      const tooClose = this.houses.some(h =>
+        Math.abs(h.group.position.x - x) < 12 && Math.abs(h.group.position.z - z) < 12
       );
-      if (!tooClose) {
-        treePositions.push(new THREE.Vector3(x, 0, z));
-      }
+      if (!tooClose) this.createTree(new THREE.Vector3(x, 0, z));
     }
 
-    treePositions.forEach(pos => this.createTree(pos));
-
-    // Spawn point marker (like Lumbridge home teleport spot)
     this.createSpawnMarker();
 
-    // Some rocks
     for (let i = 0; i < 15; i++) {
       const angle = Math.random() * Math.PI * 2;
       const dist = 15 + Math.random() * 60;
-      this.createRock(new THREE.Vector3(
-        Math.cos(angle) * dist,
-        0,
-        Math.sin(angle) * dist
-      ));
+      this.createRock(new THREE.Vector3(Math.cos(angle) * dist, 0, Math.sin(angle) * dist));
     }
   }
 
@@ -446,15 +506,12 @@ export class World {
     const tree = new THREE.Group();
     tree.position.copy(position);
 
-    // Trunk
     const trunkH = 2 + Math.random() * 2;
-    const trunkGeo = new THREE.BoxGeometry(0.5, trunkH, 0.5);
-    const trunk = new THREE.Mesh(trunkGeo, woodMat(0x5a3a1a));
+    const trunk = new THREE.Mesh(new THREE.BoxGeometry(0.5, trunkH, 0.5), mat(0x5a3a1a));
     trunk.position.y = trunkH / 2;
     trunk.castShadow = true;
     tree.add(trunk);
 
-    // Foliage (stacked cubes like OSRS trees)
     const foliageMat = new THREE.MeshLambertMaterial({
       color: new THREE.Color(0x2d6e1e).offsetHSL(0, 0, (Math.random() - 0.5) * 0.1),
       flatShading: true,
@@ -463,63 +520,46 @@ export class World {
     const layers = 2 + Math.floor(Math.random() * 2);
     for (let i = 0; i < layers; i++) {
       const size = 2.5 - i * 0.5 + Math.random() * 0.5;
-      const foliage = new THREE.Mesh(
-        new THREE.BoxGeometry(size, 1.5, size),
-        foliageMat
-      );
+      const foliage = new THREE.Mesh(new THREE.BoxGeometry(size, 1.5, size), foliageMat);
       foliage.position.y = trunkH + i * 1.2;
       foliage.rotation.y = Math.random() * 0.5;
       foliage.castShadow = true;
       tree.add(foliage);
     }
-
     this.scene.add(tree);
   }
 
   createSpawnMarker() {
-    // Glowing circle on ground
-    const markerGeo = new THREE.RingGeometry(1.5, 2, 8);
-    const markerMat = new THREE.MeshBasicMaterial({
-      color: 0xffcc00,
-      transparent: true,
-      opacity: 0.4,
-      side: THREE.DoubleSide,
-    });
-    const marker = new THREE.Mesh(markerGeo, markerMat);
+    const marker = new THREE.Mesh(
+      new THREE.RingGeometry(1.5, 2, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffcc00, transparent: true, opacity: 0.4, side: THREE.DoubleSide })
+    );
     marker.rotation.x = -Math.PI / 2;
-    marker.position.y = 0.05;
+    marker.position.y = 0.09;
     this.scene.add(marker);
 
-    // Home icon/sign
-    const signTexture = createTextTexture('SPAWN', {
-      fontSize: 16,
-      fontColor: '#ffcc00',
-      bgColor: '#00000088',
-      width: 128,
-      height: 32,
+    const signTex = createTextTexture('SPAWN', {
+      fontSize: 16, fontColor: '#ffcc00', bgColor: '#00000088', width: 128, height: 32,
     });
-    const signGeo = new THREE.PlaneGeometry(1.5, 0.4);
-    const signMat = new THREE.MeshBasicMaterial({
-      map: signTexture,
-      transparent: true,
-      depthTest: false,
-    });
-    const sign = new THREE.Mesh(signGeo, signMat);
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 0.4),
+      new THREE.MeshBasicMaterial({ map: signTex, transparent: true, depthTest: false })
+    );
     sign.position.set(0, 3, 0);
     sign.renderOrder = 999;
-    // Billboard - will be updated in render loop
     sign.userData.billboard = true;
     this.scene.add(sign);
     this.spawnSign = sign;
   }
 
   createRock(position) {
-    const rockGeo = new THREE.DodecahedronGeometry(0.3 + Math.random() * 0.5, 0);
-    const rockMat = new THREE.MeshLambertMaterial({
-      color: new THREE.Color(0x808080).offsetHSL(0, 0, (Math.random() - 0.5) * 0.15),
-      flatShading: true,
-    });
-    const rock = new THREE.Mesh(rockGeo, rockMat);
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.3 + Math.random() * 0.5, 0),
+      new THREE.MeshLambertMaterial({
+        color: new THREE.Color(0x808080).offsetHSL(0, 0, (Math.random() - 0.5) * 0.15),
+        flatShading: true,
+      })
+    );
     rock.position.copy(position);
     rock.position.y = 0.2;
     rock.rotation.set(Math.random(), Math.random(), Math.random());
@@ -537,22 +577,23 @@ export class World {
     ctx.fillStyle = '#2d5a1e';
     ctx.fillRect(0, 0, w, h);
 
-    // Dirt paths
+    // Paths
     ctx.fillStyle = '#7a6b4e';
     ctx.fillRect(w / 2 - 2, 0, 4, h);
     ctx.fillRect(0, h / 2, w, 4);
 
-    // Rooms
-    this.rooms.forEach(room => {
-      const rx = w / 2 + room.position.x * scale;
-      const ry = h / 2 - room.position.z * scale;
+    // Houses
+    this.houses.forEach(house => {
+      const rx = w / 2 + house.group.position.x * scale;
+      const ry = h / 2 - house.group.position.z * scale;
+      const size = 3 + house.rooms.length * 2;
       ctx.fillStyle = '#8c7050';
-      ctx.fillRect(rx - 3, ry - 3, 6, 6);
+      ctx.fillRect(rx - size / 2, ry - size / 2, size, size);
       ctx.strokeStyle = '#5a4030';
-      ctx.strokeRect(rx - 3, ry - 3, 6, 6);
+      ctx.strokeRect(rx - size / 2, ry - size / 2, size, size);
     });
 
-    // Characters (white dots)
+    // Characters
     characters.forEach(char => {
       const cx = w / 2 + char.group.position.x * scale;
       const cy = h / 2 - char.group.position.z * scale;
@@ -560,7 +601,7 @@ export class World {
       ctx.fillRect(cx - 1, cy - 1, 2, 2);
     });
 
-    // Camera indicator
+    // Camera
     const camX = w / 2 + camera.position.x * scale;
     const camY = h / 2 - camera.position.z * scale;
     ctx.fillStyle = '#ff0000';
@@ -568,7 +609,7 @@ export class World {
     ctx.arc(camX, camY, 3, 0, Math.PI * 2);
     ctx.fill();
 
-    // Spawn point
+    // Spawn
     ctx.fillStyle = '#ffcc00';
     ctx.beginPath();
     ctx.arc(w / 2, h / 2, 3, 0, Math.PI * 2);

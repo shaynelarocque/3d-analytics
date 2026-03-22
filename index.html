@@ -22,6 +22,12 @@
     <!-- Top bar -->
     <div id="top-bar">
       <div id="site-name">Loading...</div>
+      <div id="date-filter">
+        <button class="filter-btn" data-range="24h">24h</button>
+        <button class="filter-btn active" data-range="7d">7d</button>
+        <button class="filter-btn" data-range="30d">30d</button>
+        <button class="filter-btn" data-range="90d">90d</button>
+      </div>
       <div id="active-count">
         <span class="pulse-dot"></span>
         <span id="active-num">0</span> online
@@ -39,11 +45,11 @@
       <div class="panel-title">Visitor Log</div>
       <div id="stats-content">
         <div class="stat-row">
-          <span class="stat-label">Today</span>
+          <span class="stat-label">Views</span>
           <span class="stat-value" id="stat-today">0</span>
         </div>
         <div class="stat-row">
-          <span class="stat-label">Pages</span>
+          <span class="stat-label">Visitors</span>
           <span class="stat-value" id="stat-pages">0</span>
         </div>
         <div class="stat-row">

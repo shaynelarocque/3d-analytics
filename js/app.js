@@ -5,19 +5,18 @@ import { Character } from './character.js';
 import * as API from './api.js';
 
 // --- State ---
-let scene, camera, renderer, controls;
+let scene, camera, renderer, controls, clock;
 let world;
 let characters = [];
 let websiteId = null;
-let pageData = [];
 let isDemo = false;
-let clock;
+let currentRange = '7d';
+let siteName = '';
 
-const SPAWN_POS = new THREE.Vector3(0, 0, 6);
-const EXIT_POS = new THREE.Vector3(0, 0, 40);
+const SPAWN_POS = new THREE.Vector3(0, 0, 8);
 const REFRESH_INTERVAL = 30000;
 
-// Random visitor names (OSRS-flavored)
+// OSRS-flavored visitor names
 const NAMES = [
   'Zezima', 'W00x', 'Iron_Btw', 'GoblinSlyr', 'RuneCrftr',
   'PKer_420', 'Dharok', 'B0nk_Loot', 'AgilityCpe', 'Barrows99',
@@ -29,8 +28,11 @@ const NAMES = [
   'Rng_Based', 'Pray_Flck', 'Max_Cape', 'Bronze_Man', 'UIM_Pain',
 ];
 
-function getRandomName() {
-  return NAMES[Math.floor(Math.random() * NAMES.length)];
+let nameIndex = 0;
+function getNextName() {
+  const name = NAMES[nameIndex % NAMES.length];
+  nameIndex++;
+  return name;
 }
 
 // --- Loading ---
@@ -50,7 +52,7 @@ function hideLoadingScreen() {
 }
 
 // --- Chat log ---
-function addChatMessage(playerName, action, pageName) {
+function addChatMessage(playerName, action, detail, eventClass = '') {
   const container = document.getElementById('chat-messages');
   if (!container) return;
 
@@ -60,23 +62,23 @@ function addChatMessage(playerName, action, pageName) {
   const now = new Date();
   const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
-  msg.innerHTML = `<span class="timestamp">[${time}]</span> <span class="player-name">${playerName}</span> <span class="action">${action}</span> <span class="page-name">${pageName}</span>`;
+  const detailClass = eventClass ? `event-name ${eventClass}` : 'page-name';
+  msg.innerHTML = `<span class="timestamp">[${time}]</span> <span class="player-name">${playerName}</span> <span class="action">${action}</span> <span class="${detailClass}">${detail}</span>`;
 
   container.insertBefore(msg, container.firstChild);
 
-  // Keep max 50 messages
-  while (container.children.length > 50) {
+  while (container.children.length > 80) {
     container.removeChild(container.lastChild);
   }
 }
 
-// --- UI Updates ---
+// --- UI ---
 function updateStats(stats) {
   const el = (id) => document.getElementById(id);
   const val = (v) => typeof v === 'object' && v !== null ? v.value : v;
-  if (stats.pageviews != null) el('stat-today').textContent = val(stats.pageviews)?.toLocaleString() ?? '0';
-  if (stats.visitors != null) el('stat-pages').textContent = val(stats.visitors)?.toLocaleString() ?? '0';
-  if (stats.bounces != null) el('stat-bounces').textContent = val(stats.bounces)?.toLocaleString() ?? '0';
+  if (stats.pageviews != null) el('stat-today').textContent = (val(stats.pageviews) ?? 0).toLocaleString();
+  if (stats.visitors != null) el('stat-pages').textContent = (val(stats.visitors) ?? 0).toLocaleString();
+  if (stats.bounces != null) el('stat-bounces').textContent = (val(stats.bounces) ?? 0).toLocaleString();
   if (stats.totaltime != null) {
     const visitors = val(stats.visitors) || 1;
     const avgTime = Math.round(val(stats.totaltime) / visitors);
@@ -93,15 +95,24 @@ function showRoomInfo(room) {
   const panel = document.getElementById('room-info');
   const title = document.getElementById('room-info-title');
   const content = document.getElementById('room-info-content');
-
   if (!panel) return;
 
   panel.classList.remove('hidden');
   title.textContent = room.name;
   content.innerHTML = `
     <div>Visitors: <span class="info-value">${room.visitorCount}</span></div>
-    <div>Characters: <span class="info-value">${room.characters.length}</span></div>
+    <div>In room: <span class="info-value">${room.characters.length}</span></div>
   `;
+}
+
+// Map event names to CSS classes and readable labels
+function eventDisplayInfo(eventName) {
+  if (eventName.startsWith('scroll')) return { cls: 'event-scroll', verb: 'scrolled', label: eventName.replace('scroll_', '') + '%' };
+  if (eventName.startsWith('click')) return { cls: 'event-click', verb: 'clicked', label: eventName.replace('click_', '').replace('_', ' ') };
+  if (eventName.startsWith('form')) return { cls: 'event-form', verb: 'used form:', label: eventName.replace('form_', '') };
+  if (eventName.startsWith('hover')) return { cls: 'event-hover', verb: 'hovered', label: eventName.replace('hover_', '') };
+  if (eventName.startsWith('video')) return { cls: 'event-click', verb: 'video', label: eventName.replace('video_', '') };
+  return { cls: 'event-name', verb: 'triggered', label: eventName };
 }
 
 // --- Three.js Setup ---
@@ -123,7 +134,6 @@ function initScene() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setClearColor(0x87CEEB);
 
-  // Controls
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
@@ -133,8 +143,7 @@ function initScene() {
   controls.target.set(0, 0, -5);
 
   // Lighting
-  const ambient = new THREE.AmbientLight(0xffffff, 0.5);
-  scene.add(ambient);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
   const sun = new THREE.DirectionalLight(0xfff5e0, 1.2);
   sun.position.set(30, 40, 20);
@@ -149,17 +158,15 @@ function initScene() {
   sun.shadow.camera.bottom = -50;
   scene.add(sun);
 
-  const hemi = new THREE.HemisphereLight(0x87CEEB, 0x3a7d30, 0.3);
-  scene.add(hemi);
+  scene.add(new THREE.HemisphereLight(0x87CEEB, 0x3a7d30, 0.3));
 
-  // Resize handler
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  // Click handler
+  // Click handler for rooms
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   renderer.domElement.addEventListener('click', (e) => {
@@ -184,49 +191,67 @@ function initScene() {
   clock = new THREE.Clock();
 }
 
-// --- Character Management ---
-function spawnVisitor(room) {
-  // Jitter spawn position
+// --- Character / Journey Management ---
+
+function spawnVisitorWithJourney(session) {
   const spawnJitter = SPAWN_POS.clone().add(
     new THREE.Vector3((Math.random() - 0.5) * 4, 0, (Math.random() - 0.5) * 2)
   );
 
   const char = new Character(scene, spawnJitter);
-  const name = getRandomName();
+  const name = getNextName();
+  char.visitorName = name;
 
-  // Walk to room door, then inside
-  const doorPos = room.doorWorldPos.clone();
-  doorPos.x += (Math.random() - 0.5) * 1.5;
-  doorPos.z += Math.random() * 0.5;
-  char.setTarget(doorPos, room);
+  // Set up event callbacks
+  char.onJourneyStep = (c, step) => {
+    const shortPage = step.page === '/' ? 'Home' : step.page;
+    addChatMessage(name, 'entered', shortPage);
+    c.showChatBubble(shortPage);
 
-  room.characters.push(char);
+    // Schedule event log messages during the stay
+    if (step.events && step.events.length > 0) {
+      step.events.forEach(evt => {
+        const delayMs = evt.at * step.duration * 1000;
+        setTimeout(() => {
+          if (c.isDead) return;
+          const info = eventDisplayInfo(evt.name);
+          addChatMessage(name, info.verb, info.label, info.cls);
+          c.showChatBubble(evt.name.replace('_', ' '));
+        }, delayMs);
+      });
+    }
+  };
+
+  char.setJourney(session, world.pathGraph, world);
+
+  // Track character in the first room
+  if (session.steps.length > 0) {
+    const firstRoom = world.findRoom(session.steps[0].page);
+    if (firstRoom) firstRoom.characters.push(char);
+  }
+
   characters.push(char);
-
-  // Chat bubble and log
-  char.showChatBubble(room.name);
-  addChatMessage(name, 'entered', room.name);
-
+  addChatMessage(name, 'logged in', siteName || 'the world');
   return char;
 }
 
-function removeVisitor(char) {
-  // Find which room this character belongs to
-  for (const room of world.rooms) {
-    const idx = room.characters.indexOf(char);
-    if (idx !== -1) {
-      room.characters.splice(idx, 1);
-      addChatMessage(getRandomName(), 'left', room.name);
-      break;
+function clearAllCharacters() {
+  for (const char of characters) {
+    char.dispose();
+  }
+  characters = [];
+  if (world) {
+    for (const room of world.rooms) {
+      room.characters = [];
     }
   }
-  char.setLeaving(EXIT_POS.clone().add(
-    new THREE.Vector3((Math.random() - 0.5) * 8, 0, Math.random() * 4)
-  ));
 }
 
 // --- Data Fetching ---
-async function fetchData() {
+
+async function fetchData(range) {
+  const { startAt, endAt } = API.getDateRange(range);
+
   try {
     setLoadingProgress(20, 'Connecting to Umami...');
 
@@ -235,77 +260,153 @@ async function fetchData() {
 
     const site = websites[0];
     websiteId = site.id;
-
-    document.getElementById('site-name').textContent = site.name || site.domain || 'Analytics';
+    siteName = site.name || site.domain || 'Analytics';
+    document.getElementById('site-name').textContent = siteName;
 
     setLoadingProgress(40, 'Fetching visitor data...');
 
-    const now = Date.now();
-    const monthAgo = now - 30 * 86400000;
-
     const [active, stats, pages] = await Promise.all([
       API.getActiveVisitors(websiteId),
-      API.getStats(websiteId, monthAgo, now),
-      API.getMetrics(websiteId, 'url', monthAgo, now, 20),
+      API.getStats(websiteId, startAt, endAt),
+      API.getMetrics(websiteId, 'url', startAt, endAt, 20),
     ]);
-
-    setLoadingProgress(70, 'Building world...');
 
     updateActiveCount(active);
     updateStats(stats);
 
-    // If no page metrics yet, use demo pages with real site name
-    if (!pages || pages.length === 0) {
-      const demo = API.getDemoData();
-      pageData = demo.pages;
-      isDemo = true;
-      document.getElementById('site-name').textContent =
-        (site.name || site.domain) + ' (No data yet - demo rooms)';
-      return { pages: demo.pages, active, stats };
+    // Try fetching real sessions
+    let sessions = [];
+    try {
+      const rawSessions = await API.getSessions(websiteId, startAt, endAt, 50);
+      sessions = API.filterBotSessions(rawSessions);
+    } catch (e) {
+      console.warn('Sessions API unavailable:', e.message);
     }
 
-    pageData = pages;
-    return { pages, active, stats };
+    // If we have real pages, use them
+    if (pages && pages.length > 0) {
+      setLoadingProgress(70, 'Building world...');
+
+      // If no real sessions, generate synthetic ones from page data
+      if (sessions.length === 0) {
+        const demoSessions = API.generateDemoSessions(pages, Math.max(8, active || 5));
+        sessions = demoSessions.filter(s => !s.isBot);
+        isDemo = true;
+      }
+
+      return { pages, active, stats, sessions };
+    }
+
+    // No page data at all — full demo mode
+    throw new Error('No page data');
   } catch (err) {
-    console.warn('API unavailable, using demo data:', err.message);
+    console.warn('Using demo data:', err.message);
     isDemo = true;
 
     const demo = API.getDemoData();
-    document.getElementById('site-name').textContent = demo.website.name + ' (Demo)';
+    siteName = demo.website.name + ' (Demo)';
+    document.getElementById('site-name').textContent = siteName;
     updateActiveCount(demo.active);
     updateStats(demo.stats);
-    pageData = demo.pages;
+
+    const sessions = API.generateDemoSessions(demo.pages, 12).filter(s => !s.isBot);
 
     setLoadingProgress(70, 'Building demo world...');
-    return { pages: demo.pages, active: demo.active, stats: demo.stats };
+    return { pages: demo.pages, active: demo.active, stats: demo.stats, sessions };
   }
 }
+
+// --- Build / Rebuild World ---
+
+function clearWorld() {
+  if (!world) return;
+  // Remove all house groups and decorations
+  const toRemove = [];
+  scene.traverse(obj => {
+    if (obj !== scene && obj.type !== 'AmbientLight' && obj.type !== 'DirectionalLight' && obj.type !== 'HemisphereLight') {
+      if (obj.parent === scene) toRemove.push(obj);
+    }
+  });
+  toRemove.forEach(obj => {
+    scene.remove(obj);
+    obj.traverse(child => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) {
+        if (child.material.map) child.material.map.dispose();
+        child.material.dispose();
+      }
+    });
+  });
+  world = null;
+}
+
+async function buildWorld(range) {
+  clearAllCharacters();
+  clearWorld();
+
+  const data = await fetchData(range);
+
+  setLoadingProgress(80, 'Placing buildings...');
+  world = new World(scene);
+  world.build(data.pages);
+
+  setLoadingProgress(90, 'Spawning visitors...');
+
+  // Stagger character spawns for visual effect
+  data.sessions.forEach((session, i) => {
+    setTimeout(() => spawnVisitorWithJourney(session), i * 600 + Math.random() * 400);
+  });
+
+  setLoadingProgress(100, 'Welcome!');
+}
+
+// --- Date Filter ---
+
+function setupDateFilter() {
+  const buttons = document.querySelectorAll('.filter-btn');
+  buttons.forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const range = btn.dataset.range;
+      if (range === currentRange) return;
+
+      currentRange = range;
+      buttons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+
+      // Show loading state
+      document.getElementById('chat-messages').innerHTML = '';
+      addChatMessage('System', 'reloading', `${range} data...`);
+
+      await buildWorld(range);
+    });
+  });
+}
+
+// --- Periodic Refresh ---
 
 async function refreshData() {
   if (isDemo || !websiteId) return;
 
   try {
-    const now = Date.now();
-    const dayAgo = now - 86400000;
+    const { startAt, endAt } = API.getDateRange(currentRange);
 
-    const [active, pages] = await Promise.all([
-      API.getActiveVisitors(websiteId),
-      API.getMetrics(websiteId, 'url', dayAgo, now, 20),
-    ]);
-
+    const active = await API.getActiveVisitors(websiteId);
     updateActiveCount(active);
 
-    // Spawn new visitors for pages that grew
-    pages.forEach(page => {
-      const room = world.rooms.find(r => r.name === page.x);
-      if (room) {
-        const oldCount = room.visitorCount;
-        room.visitorCount = page.y;
-        const diff = page.y - oldCount;
-        if (diff > 0) {
-          for (let i = 0; i < Math.min(diff, 3); i++) {
-            spawnVisitor(room);
-          }
+    // Try fetching new sessions
+    const rawSessions = await API.getSessions(websiteId, startAt, endAt, 10);
+    const sessions = API.filterBotSessions(rawSessions);
+
+    sessions.forEach(session => {
+      // Check if we already have this session spawned
+      const alreadySpawned = characters.some(c => c.journey?.id === session.id);
+      if (!alreadySpawned && session.id) {
+        // Build a synthetic journey for this session
+        // (real session activity would require another API call)
+        const pages = world.rooms.map(r => ({ x: r.name, y: r.visitorCount }));
+        const synth = API.generateDemoSessions(pages, 1)[0];
+        if (synth && !synth.isBot) {
+          spawnVisitorWithJourney(synth);
         }
       }
     });
@@ -314,9 +415,12 @@ async function refreshData() {
   }
 }
 
+// --- Demo Spawner ---
+
+let demoSpawnTimer = 0;
+const DEMO_SPAWN_INTERVAL = 5;
+
 // --- Simulation ---
-let spawnTimer = 0;
-const SPAWN_INTERVAL_DEMO = 3;
 
 function updateSimulation(delta) {
   // Update all characters
@@ -324,26 +428,30 @@ function updateSimulation(delta) {
     const char = characters[i];
     char.update(delta);
 
-    // Remove dead characters
     if (char.isDead) {
+      addChatMessage(char.visitorName || 'Visitor', 'logged out', '');
+      // Remove from any room tracking
+      if (world) {
+        for (const room of world.rooms) {
+          const idx = room.characters.indexOf(char);
+          if (idx !== -1) room.characters.splice(idx, 1);
+        }
+      }
       char.dispose();
       characters.splice(i, 1);
-      continue;
-    }
-
-    // Randomly remove some characters after a while (simulates session ending)
-    if (!char.isLeaving && char.lifetime > char.maxLifetime) {
-      removeVisitor(char);
     }
   }
 
-  // In demo mode, periodically spawn visitors
+  // Demo mode: periodically spawn new visitors
   if (isDemo && world && world.rooms.length > 0) {
-    spawnTimer += delta;
-    if (spawnTimer > SPAWN_INTERVAL_DEMO) {
-      spawnTimer = 0;
-      const room = world.rooms[Math.floor(Math.random() * world.rooms.length)];
-      spawnVisitor(room);
+    demoSpawnTimer += delta;
+    if (demoSpawnTimer > DEMO_SPAWN_INTERVAL) {
+      demoSpawnTimer = 0;
+      const pages = world.rooms.map(r => ({ x: r.name, y: r.visitorCount }));
+      const sessions = API.generateDemoSessions(pages, 1).filter(s => !s.isBot);
+      if (sessions.length > 0) {
+        spawnVisitorWithJourney(sessions[0]);
+      }
     }
   }
 
@@ -366,33 +474,10 @@ function updateSimulation(delta) {
 async function main() {
   setLoadingProgress(10, 'Initializing...');
   initScene();
+  setupDateFilter();
 
-  const data = await fetchData();
+  await buildWorld(currentRange);
 
-  setLoadingProgress(80, 'Placing buildings...');
-  world = new World(scene);
-  world.build(data.pages);
-
-  setLoadingProgress(90, 'Spawning visitors...');
-
-  // Initial visitor spawn based on active count
-  const totalActive = data.active || 5;
-  const roomCount = world.rooms.length;
-  if (roomCount > 0) {
-    // Distribute visitors proportionally to page views
-    const totalViews = data.pages.reduce((sum, p) => sum + p.y, 0) || 1;
-    data.pages.forEach((page, i) => {
-      const room = world.rooms[i];
-      if (!room) return;
-      const proportion = page.y / totalViews;
-      const count = Math.max(1, Math.round(totalActive * proportion));
-      for (let j = 0; j < Math.min(count, 5); j++) {
-        setTimeout(() => spawnVisitor(room), j * 500 + Math.random() * 1000);
-      }
-    });
-  }
-
-  setLoadingProgress(100, 'Welcome!');
   setTimeout(hideLoadingScreen, 500);
 
   // Periodic refresh
@@ -406,7 +491,6 @@ async function main() {
     controls.update();
     updateSimulation(delta);
 
-    // Update minimap
     const minimapCanvas = document.getElementById('minimap');
     if (minimapCanvas && world) {
       world.updateMinimap(minimapCanvas, camera, characters);
