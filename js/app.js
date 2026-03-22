@@ -220,6 +220,7 @@ function initScene() {
   });
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.setClearColor(0x87CEEB);
@@ -608,8 +609,7 @@ async function main() {
 
   setTimeout(hideLoadingScreen, 500);
 
-  function animate() {
-    requestAnimationFrame(animate);
+  renderer.setAnimationLoop(() => {
     const delta = Math.min(clock.getDelta(), 0.1);
 
     controls.update();
@@ -621,9 +621,7 @@ async function main() {
     }
 
     renderer.render(scene, camera);
-  }
-
-  animate();
+  });
 }
 
 main().catch(err => {

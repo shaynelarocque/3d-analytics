@@ -1,5 +1,12 @@
 import * as THREE from 'three';
 
+// --- Reference Frame Contract ---
+// Axes: +X right, +Y up, +Z toward camera (Three.js default right-handed)
+// Units: 1 unit ≈ 1 meter
+// Character anchors: feet at y=0 (minY = 0)
+// Character forward: local -Z (Three.js Object3D convention)
+// Character height: ~2 units from feet to top of head
+
 const SKIN_TONES = [0xf5c6a0, 0xd4a373, 0xc08050, 0x8b6b4a, 0xf0d0b0, 0xb07840];
 const SHIRT_COLORS = [0xc0392b, 0x2980b9, 0x27ae60, 0xf39c12, 0x8e44ad, 0x1abc9c, 0xe74c3c, 0x3498db, 0xd35400, 0x16a085];
 const PANTS_COLORS = [0x2c3e50, 0x7f8c8d, 0x6b4226, 0x1a5276, 0x4a235a, 0x1c2833, 0x5d4037];
@@ -8,6 +15,36 @@ const HAIR_COLORS = [0x2c1a0e, 0x8b4513, 0xdaa520, 0xc0392b, 0x1a1a1a, 0xf5f5dc,
 const WALK_SPEED = 3.5;
 const WANDER_SPEED = 1.2;
 const ANIM_SPEED = 8;
+
+// --- Shared geometry pool (instantiate once, reuse across all characters) ---
+const SHARED_GEO = {
+  head: new THREE.BoxGeometry(0.5, 0.5, 0.5),
+  hair: new THREE.BoxGeometry(0.52, 0.18, 0.52),
+  eye: new THREE.BoxGeometry(0.08, 0.08, 0.06),
+  torso: new THREE.BoxGeometry(0.5, 0.6, 0.3),
+  arm: new THREE.BoxGeometry(0.18, 0.55, 0.2),
+  hand: new THREE.BoxGeometry(0.14, 0.12, 0.16),
+  leg: new THREE.BoxGeometry(0.2, 0.5, 0.24),
+  boot: new THREE.BoxGeometry(0.22, 0.14, 0.3),
+  shadow: new THREE.CircleGeometry(0.3, 8),
+};
+
+// Shared materials (keyed by color hex, cached on first use)
+const materialCache = new Map();
+function getMat(color) {
+  if (!materialCache.has(color)) {
+    materialCache.set(color, new THREE.MeshStandardMaterial({
+      color, flatShading: true, roughness: 0.9, metalness: 0,
+    }));
+  }
+  return materialCache.get(color);
+}
+
+const SHADOW_MAT = new THREE.MeshBasicMaterial({
+  color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false,
+});
+const EYE_MAT = getMat(0x000000);
+const BOOT_COLOR = 0x3e2723;
 
 export class Character {
   constructor(scene, spawnPos) {
@@ -54,89 +91,83 @@ export class Character {
     const pants = PANTS_COLORS[Math.floor(Math.random() * PANTS_COLORS.length)];
     const hair = HAIR_COLORS[Math.floor(Math.random() * HAIR_COLORS.length)];
 
-    const mat = (color) => new THREE.MeshLambertMaterial({ color, flatShading: true });
+    const skinMat = getMat(skin);
+    const shirtMat = getMat(shirt);
+    const pantsMat = getMat(pants);
+    const hairMat = getMat(hair);
+    const bootMat = getMat(BOOT_COLOR);
 
-    // Head
-    const headGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
-    this.head = new THREE.Mesh(headGeo, mat(skin));
+    // Head (anchor: bottom of head at y=1.4, top at y=1.9)
+    this.head = new THREE.Mesh(SHARED_GEO.head, skinMat);
     this.head.position.y = 1.65;
     this.head.castShadow = true;
     this.group.add(this.head);
 
-    // Hair
-    const hairMesh = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.18, 0.52), mat(hair));
+    const hairMesh = new THREE.Mesh(SHARED_GEO.hair, hairMat);
     hairMesh.position.y = 0.26;
     this.head.add(hairMesh);
 
-    // Eyes
-    const eyeGeo = new THREE.BoxGeometry(0.08, 0.08, 0.06);
-    const eyeMat = mat(0x000000);
-    const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+    const leftEye = new THREE.Mesh(SHARED_GEO.eye, EYE_MAT);
     leftEye.position.set(-0.12, 0.02, 0.26);
     this.head.add(leftEye);
-    const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+    const rightEye = new THREE.Mesh(SHARED_GEO.eye, EYE_MAT);
     rightEye.position.set(0.12, 0.02, 0.26);
     this.head.add(rightEye);
 
     // Torso
-    this.torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.3), mat(shirt));
+    this.torso = new THREE.Mesh(SHARED_GEO.torso, shirtMat);
     this.torso.position.y = 1.1;
     this.torso.castShadow = true;
     this.group.add(this.torso);
 
-    // Arms
-    const armGeo = new THREE.BoxGeometry(0.18, 0.55, 0.2);
-    const handGeo = new THREE.BoxGeometry(0.14, 0.12, 0.16);
-
+    // Arms (pivoted at shoulder for swing animation)
     this.leftArmPivot = new THREE.Group();
     this.leftArmPivot.position.set(-0.34, 1.35, 0);
-    this.leftArmPivot.add(new THREE.Mesh(armGeo, mat(shirt)));
-    this.leftArmPivot.children[0].position.y = -0.25;
-    this.leftArmPivot.children[0].castShadow = true;
-    this.leftArmPivot.add(new THREE.Mesh(handGeo, mat(skin)));
-    this.leftArmPivot.children[1].position.y = -0.52;
+    const la = new THREE.Mesh(SHARED_GEO.arm, shirtMat);
+    la.position.y = -0.25;
+    la.castShadow = true;
+    this.leftArmPivot.add(la);
+    const lh = new THREE.Mesh(SHARED_GEO.hand, skinMat);
+    lh.position.y = -0.52;
+    this.leftArmPivot.add(lh);
     this.group.add(this.leftArmPivot);
 
     this.rightArmPivot = new THREE.Group();
     this.rightArmPivot.position.set(0.34, 1.35, 0);
-    this.rightArmPivot.add(new THREE.Mesh(armGeo, mat(shirt)));
-    this.rightArmPivot.children[0].position.y = -0.25;
-    this.rightArmPivot.children[0].castShadow = true;
-    this.rightArmPivot.add(new THREE.Mesh(handGeo, mat(skin)));
-    this.rightArmPivot.children[1].position.y = -0.52;
+    const ra = new THREE.Mesh(SHARED_GEO.arm, shirtMat);
+    ra.position.y = -0.25;
+    ra.castShadow = true;
+    this.rightArmPivot.add(ra);
+    const rh = new THREE.Mesh(SHARED_GEO.hand, skinMat);
+    rh.position.y = -0.52;
+    this.rightArmPivot.add(rh);
     this.group.add(this.rightArmPivot);
 
-    // Legs
-    const legGeo = new THREE.BoxGeometry(0.2, 0.5, 0.24);
-    const bootGeo = new THREE.BoxGeometry(0.22, 0.14, 0.3);
-    const bootMat = mat(0x3e2723);
-
+    // Legs (pivoted at hip, feet at y=0)
     this.leftLegPivot = new THREE.Group();
     this.leftLegPivot.position.set(-0.12, 0.8, 0);
-    this.leftLegPivot.add(new THREE.Mesh(legGeo, mat(pants)));
-    this.leftLegPivot.children[0].position.y = -0.25;
-    this.leftLegPivot.children[0].castShadow = true;
-    const lb = new THREE.Mesh(bootGeo, bootMat);
+    const ll = new THREE.Mesh(SHARED_GEO.leg, pantsMat);
+    ll.position.y = -0.25;
+    ll.castShadow = true;
+    this.leftLegPivot.add(ll);
+    const lb = new THREE.Mesh(SHARED_GEO.boot, bootMat);
     lb.position.set(0, -0.5, 0.03);
     this.leftLegPivot.add(lb);
     this.group.add(this.leftLegPivot);
 
     this.rightLegPivot = new THREE.Group();
     this.rightLegPivot.position.set(0.12, 0.8, 0);
-    this.rightLegPivot.add(new THREE.Mesh(legGeo, mat(pants)));
-    this.rightLegPivot.children[0].position.y = -0.25;
-    this.rightLegPivot.children[0].castShadow = true;
-    const rb = new THREE.Mesh(bootGeo, bootMat);
+    const rl = new THREE.Mesh(SHARED_GEO.leg, pantsMat);
+    rl.position.y = -0.25;
+    rl.castShadow = true;
+    this.rightLegPivot.add(rl);
+    const rb = new THREE.Mesh(SHARED_GEO.boot, bootMat);
     rb.position.set(0, -0.5, 0.03);
     this.rightLegPivot.add(rb);
     this.group.add(this.rightLegPivot);
 
-    // Shadow blob
-    const shadowGeo = new THREE.CircleGeometry(0.3, 8);
-    const shadowMat = new THREE.MeshBasicMaterial({
-      color: 0x000000, transparent: true, opacity: 0.3, depthWrite: false,
-    });
-    const shadow = new THREE.Mesh(shadowGeo, shadowMat);
+    // Shadow blob (at ground plane y=0)
+    const shadow = new THREE.Mesh(SHARED_GEO.shadow, SHADOW_MAT);
     shadow.rotation.x = -Math.PI / 2;
     shadow.position.y = 0.02;
     this.group.add(shadow);
@@ -360,12 +391,11 @@ export class Character {
 
   dispose() {
     this.scene.remove(this.group);
-    this.group.traverse((obj) => {
-      if (obj.geometry) obj.geometry.dispose();
-      if (obj.material) {
-        if (obj.material.map) obj.material.map.dispose();
-        obj.material.dispose();
-      }
-    });
+    // Only dispose chat bubble textures (unique per character)
+    // Shared geometries and materials are pooled — do NOT dispose them
+    if (this.chatBubble?.material?.map) {
+      this.chatBubble.material.map.dispose();
+      this.chatBubble.material.dispose();
+    }
   }
 }
