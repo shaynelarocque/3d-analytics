@@ -16,6 +16,19 @@ const WALL_THICK = 0.3;
 const INNER_WALL = 0.15;
 const DOOR_W = 2;
 const DOOR_H = 2.8;
+const STREET_W = 6;
+const STREET_GAP = 3;
+const STREET_START_Z = -6;
+
+function getHouseFootprint(house) {
+  const n = house.pages.length;
+  const cols = Math.min(n, 5);
+  const hasCorr = n > 1;
+  return {
+    width: cols * ROOM_W,
+    depth: ROOM_D + (hasCorr ? CORRIDOR_D : 0),
+  };
+}
 
 function mat(color) {
   return new THREE.MeshLambertMaterial({ color, flatShading: true });
@@ -91,6 +104,12 @@ function groupPagesIntoHouses(pages) {
     if (parts.length === 0) {
       key = '/';
       name = 'Home';
+    } else if (parts.length >= 2) {
+      // Group 2 levels deep (e.g., /works/play/* gets its own house)
+      key = '/' + parts[0] + '/' + parts[1];
+      // Use the second segment as the display name
+      const seg = parts[1].replace(/-/g, ' ');
+      name = seg.charAt(0).toUpperCase() + seg.slice(1);
     } else {
       key = '/' + parts[0];
       name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
@@ -102,6 +121,9 @@ function groupPagesIntoHouses(pages) {
     groups.get(key).pages.push(page);
   }
 
+  // Merge groups that have only 1 page AND whose parent also exists as a group
+  // e.g., if /works has its own page AND /works/district3-site exists,
+  // keep /works as a standalone house
   return Array.from(groups.values()).map(g => new House(g.name, g.pages));
 }
 
@@ -142,21 +164,80 @@ export class World {
     const count = this.houses.length;
     if (count === 0) return;
 
-    const cols = Math.ceil(Math.sqrt(count));
-    const spacing = 18;
-    const offsetX = -(cols - 1) * spacing / 2;
-    const startZ = -12;
+    // Sort: larger houses first, then by traffic
+    this.houses.sort((a, b) => {
+      const sizeA = Math.min(a.pages.length, 5);
+      const sizeB = Math.min(b.pages.length, 5);
+      if (sizeB !== sizeA) return sizeB - sizeA;
+      const trafficA = a.pages.reduce((s, p) => s + p.y, 0);
+      const trafficB = b.pages.reduce((s, p) => s + p.y, 0);
+      return trafficB - trafficA;
+    });
 
-    this.houses.forEach((house, i) => {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const x = offsetX + col * spacing;
-      const z = startZ - row * spacing;
+    // Place houses on alternating sides of a central street
+    let leftZ = STREET_START_Z;
+    let rightZ = STREET_START_Z;
+
+    this.houses.forEach((house) => {
+      const { width, depth } = getHouseFootprint(house);
+      const halfW = width / 2;
+      const halfD = depth / 2;
+
+      // Pick the side with less Z extent (greedy balance)
+      const useLeft = leftZ >= rightZ;
+      const xSign = useLeft ? -1 : 1;
+      const x = xSign * (STREET_W / 2 + halfW + 1); // +1 for breathing room
+      const cursorZ = useLeft ? leftZ : rightZ;
+      const z = cursorZ - halfD;
 
       house.group.position.set(x, 0, z);
       this.buildHouse(house);
-      this.createPath(new THREE.Vector3(0, 0, 0), new THREE.Vector3(x, 0, z));
       this.scene.add(house.group);
+
+      // Draw side-branch path from street to door
+      const doorZ = z + halfD + 0.8;
+      this._drawPathSegment(new THREE.Vector3(0, 0, doorZ), new THREE.Vector3(x, 0, doorZ));
+
+      // Advance cursor
+      if (useLeft) {
+        leftZ = z - halfD - STREET_GAP;
+      } else {
+        rightZ = z - halfD - STREET_GAP;
+      }
+    });
+
+    // Build main street spine + path graph nodes
+    const streetEndZ = Math.min(leftZ, rightZ) - 2;
+    this.streetExtentZ = streetEndZ;
+    this._createMainStreet(STREET_START_Z + 4, streetEndZ);
+
+    // Add street spine nodes to path graph
+    const streetNodes = ['hub'];
+    let nodeZ = STREET_START_Z;
+    while (nodeZ > streetEndZ) {
+      const nodeId = `street:${Math.round(nodeZ)}`;
+      this.pathGraph.addNode(nodeId, new THREE.Vector3(0, 0, nodeZ));
+      this.pathGraph.addEdge(streetNodes[streetNodes.length - 1], nodeId);
+      streetNodes.push(nodeId);
+      nodeZ -= 8;
+    }
+
+    // Connect each house door to nearest street spine node
+    this.houses.forEach(house => {
+      const doorPos = this.pathGraph.nodes.get(house.doorNodeId)?.position;
+      if (!doorPos) return;
+
+      let bestNode = 'hub';
+      let bestDist = Infinity;
+      for (const sn of streetNodes) {
+        const snPos = this.pathGraph.nodes.get(sn).position;
+        const dist = Math.abs(snPos.z - doorPos.z);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestNode = sn;
+        }
+      }
+      this.pathGraph.addEdge(bestNode, house.doorNodeId);
     });
   }
 
@@ -213,11 +294,10 @@ export class World {
     signMesh.position.set(0, DOOR_H + 0.5, frontZ + 0.2);
     g.add(signMesh);
 
-    // Door path node (just outside the door)
+    // Door path node (just outside the door) — connected to street in layoutHouses()
     const doorWorldPos = new THREE.Vector3(housePos.x, 0, housePos.z + halfD + 0.8);
     house.doorNodeId = `door:${house.name}`;
     this.pathGraph.addNode(house.doorNodeId, doorWorldPos);
-    this.pathGraph.addEdge('hub', house.doorNodeId);
 
     // Inside-door node (just inside the door)
     const insideDoorId = `inside:${house.name}`;
@@ -457,9 +537,10 @@ export class World {
     }
   }
 
-  createPath(from, to) {
+  _drawPathSegment(from, to) {
     const dir = new THREE.Vector3().subVectors(to, from);
     const length = dir.length();
+    if (length < 0.5) return;
     dir.normalize();
 
     const segments = Math.ceil(length / 2);
@@ -481,15 +562,35 @@ export class World {
     }
   }
 
+  _createMainStreet(startZ, endZ) {
+    const length = Math.abs(endZ - startZ);
+    const segments = Math.ceil(length / 2);
+
+    for (let i = 0; i <= segments; i++) {
+      const z = startZ - (i / segments) * length;
+      const seg = new THREE.Mesh(
+        new THREE.BoxGeometry(STREET_W + 1, 0.06, 2.2),
+        new THREE.MeshLambertMaterial({
+          color: new THREE.Color(DIRT).offsetHSL(0, 0, (Math.random() - 0.5) * 0.04),
+        })
+      );
+      seg.position.set(0, 0.09, z);
+      seg.receiveShadow = true;
+      this.scene.add(seg);
+    }
+  }
+
   createDecorations() {
     for (let i = 0; i < 25; i++) {
       const angle = Math.random() * Math.PI * 2;
       const dist = 25 + Math.random() * 55;
       const x = Math.cos(angle) * dist;
       const z = Math.sin(angle) * dist;
-      const tooClose = this.houses.some(h =>
-        Math.abs(h.group.position.x - x) < 12 && Math.abs(h.group.position.z - z) < 12
-      );
+      const tooClose = this.houses.some(h => {
+        const fp = getHouseFootprint(h);
+        return Math.abs(h.group.position.x - x) < (fp.width / 2 + 5) &&
+               Math.abs(h.group.position.z - z) < (fp.depth / 2 + 5);
+      });
       if (!tooClose) this.createTree(new THREE.Vector3(x, 0, z));
     }
 
@@ -577,10 +678,11 @@ export class World {
     ctx.fillStyle = '#2d5a1e';
     ctx.fillRect(0, 0, w, h);
 
-    // Paths
+    // Main street
     ctx.fillStyle = '#7a6b4e';
-    ctx.fillRect(w / 2 - 2, 0, 4, h);
-    ctx.fillRect(0, h / 2, w, 4);
+    const streetTopY = h / 2 - (STREET_START_Z + 4) * scale;
+    const streetBotY = h / 2 - (this.streetExtentZ || -50) * scale;
+    ctx.fillRect(w / 2 - 3, streetTopY, 6, streetBotY - streetTopY);
 
     // Houses
     this.houses.forEach(house => {

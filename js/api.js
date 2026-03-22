@@ -107,23 +107,29 @@ const DEMO_EVENTS = [
 
 export function getDemoData() {
   return {
-    website: { id: 'demo', name: 'Demo Site', domain: 'example.com' },
-    active: 7,
+    website: { id: 'demo', name: 'Portfolio', domain: 'shaynelarocque.com' },
+    active: 5,
     stats: {
-      pageviews: 1842,
-      visitors: 423,
-      bounces: 187,
-      totaltime: 98400,
+      pageviews: 1284,
+      visitors: 318,
+      bounces: 142,
+      totaltime: 74200,
     },
     pages: [
-      { x: '/', y: 312 },
-      { x: '/about', y: 87 },
-      { x: '/blog', y: 201 },
-      { x: '/blog/hello-world', y: 145 },
-      { x: '/contact', y: 56 },
-      { x: '/projects', y: 98 },
-      { x: '/docs', y: 167 },
-      { x: '/pricing', y: 73 },
+      { x: '/', y: 412 },
+      { x: '/works', y: 187 },
+      { x: '/works/district3-site', y: 134 },
+      { x: '/works/district3-checkin', y: 89 },
+      { x: '/works/district3-dibs', y: 67 },
+      { x: '/works/briefbot', y: 102 },
+      { x: '/works/play/3d-analytics', y: 45 },
+      { x: '/works/play/checkplease', y: 38 },
+      { x: '/works/play/occasionaltranspo', y: 29 },
+      { x: '/works/play/nasty-savings', y: 22 },
+      { x: '/works/play/large-lithic-maker', y: 17 },
+      { x: '/works/play/markdowntopdf', y: 12 },
+      { x: '/history', y: 93 },
+      { x: '/connect', y: 54 },
     ],
   };
 }
