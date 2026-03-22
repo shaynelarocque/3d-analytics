@@ -135,8 +135,12 @@ export function getDemoData() {
 }
 
 // Generate synthetic sessions with journeys + events for demo mode
-export function generateDemoSessions(pages, count = 15) {
+// startAt/endAt are ms timestamps for distributing sessions across the range
+export function generateDemoSessions(pages, count = 15, startAt = null, endAt = null) {
   const sessions = [];
+  const rangeStart = startAt || (Date.now() - 7 * 86400000);
+  const rangeEnd = endAt || Date.now();
+  const rangeMs = rangeEnd - rangeStart;
 
   for (let i = 0; i < count; i++) {
     const numSteps = 1 + Math.floor(Math.random() * 4);
@@ -151,34 +155,36 @@ export function generateDemoSessions(pages, count = 15) {
       for (let e = 0; e < numEvents; e++) {
         events.push({
           name: DEMO_EVENTS[Math.floor(Math.random() * DEMO_EVENTS.length)],
-          // When in the stay this event fires (0-1 fraction of duration)
           at: Math.random(),
         });
       }
       events.sort((a, b) => a.at - b.at);
 
-      steps.push({
-        page: shuffled[s].x,
-        duration,
-        events,
-      });
+      steps.push({ page: shuffled[s].x, duration, events });
     }
 
-    sessions.push({ id: `demo-${i}`, steps });
+    // Distribute spawn times across the date range
+    const spawnAt = rangeStart + Math.random() * rangeMs;
+
+    sessions.push({ id: `demo-${i}`, steps, spawnAt });
   }
 
-  // Also add a few bot-like sessions that should get filtered
+  // Bot sessions
   for (let i = 0; i < 5; i++) {
     sessions.push({
       id: `bot-${i}`,
       isBot: true,
+      spawnAt: rangeStart + Math.random() * rangeMs,
       steps: [{
         page: pages[Math.floor(Math.random() * pages.length)].x,
-        duration: 1 + Math.random() * 3, // <5s
+        duration: 1 + Math.random() * 3,
         events: [],
       }],
     });
   }
+
+  // Sort by spawn time so timeline can process in order
+  sessions.sort((a, b) => a.spawnAt - b.spawnAt);
 
   return sessions;
 }

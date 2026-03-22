@@ -94,37 +94,64 @@ class House {
 // --- Group pages into houses by URL prefix ---
 
 function groupPagesIntoHouses(pages) {
-  const groups = new Map();
+  // Step 1: group by first path segment
+  const topGroups = new Map();
 
   for (const page of pages) {
-    const url = page.x;
-    const parts = url.split('/').filter(Boolean);
-
-    let key, name;
-    if (parts.length === 0) {
-      key = '/';
-      name = 'Home';
-    } else if (parts.length >= 2) {
-      // Group 2 levels deep (e.g., /works/play/* gets its own house)
-      key = '/' + parts[0] + '/' + parts[1];
-      // Use the second segment as the display name
-      const seg = parts[1].replace(/-/g, ' ');
-      name = seg.charAt(0).toUpperCase() + seg.slice(1);
-    } else {
-      key = '/' + parts[0];
-      name = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-    }
-
-    if (!groups.has(key)) {
-      groups.set(key, { name, pages: [] });
-    }
-    groups.get(key).pages.push(page);
+    const parts = page.x.split('/').filter(Boolean);
+    const key = parts.length === 0 ? '/' : '/' + parts[0];
+    if (!topGroups.has(key)) topGroups.set(key, []);
+    topGroups.get(key).push(page);
   }
 
-  // Merge groups that have only 1 page AND whose parent also exists as a group
-  // e.g., if /works has its own page AND /works/district3-site exists,
-  // keep /works as a standalone house
-  return Array.from(groups.values()).map(g => new House(g.name, g.pages));
+  // Step 2: within each top group, check for sub-groups at depth 2 with 2+ pages
+  // If found, extract them into their own house
+  const houses = [];
+
+  for (const [key, groupPages] of topGroups) {
+    if (key === '/') {
+      const name = 'Home';
+      houses.push(new House(name, groupPages));
+      continue;
+    }
+
+    const seg1 = key.slice(1);
+    const displayName = seg1.charAt(0).toUpperCase() + seg1.slice(1);
+
+    // Find depth-2 sub-groups
+    const subGroups = new Map();
+    const remainder = [];
+
+    for (const page of groupPages) {
+      const parts = page.x.split('/').filter(Boolean);
+      if (parts.length >= 3) {
+        // Has a depth-2 prefix like /works/play
+        const subKey = parts[1];
+        if (!subGroups.has(subKey)) subGroups.set(subKey, []);
+        subGroups.get(subKey).push(page);
+      } else {
+        remainder.push(page);
+      }
+    }
+
+    // Extract sub-groups with 2+ pages into their own houses
+    for (const [subKey, subPages] of subGroups) {
+      if (subPages.length >= 2) {
+        const subName = subKey.replace(/-/g, ' ');
+        houses.push(new House(subName.charAt(0).toUpperCase() + subName.slice(1), subPages));
+      } else {
+        // Single page sub-group stays in parent
+        remainder.push(...subPages);
+      }
+    }
+
+    // Parent house with remaining pages
+    if (remainder.length > 0) {
+      houses.push(new House(displayName, remainder));
+    }
+  }
+
+  return houses;
 }
 
 // --- World ---

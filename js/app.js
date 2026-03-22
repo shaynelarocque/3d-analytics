@@ -14,7 +14,20 @@ let currentRange = '7d';
 let siteName = '';
 
 const SPAWN_POS = new THREE.Vector3(0, 0, 8);
-const REFRESH_INTERVAL = 30000;
+
+// Timeline state
+let timeline = {
+  startAt: 0,
+  endAt: 0,
+  current: 0,
+  speed: 1,        // multiplier on base speed
+  baseSpeed: 1,    // computed: range / PLAYBACK_DURATION
+  playing: true,
+  sessionQueue: [], // sorted by spawnAt, shifted as spawned
+};
+const PLAYBACK_DURATION_S = 180; // full range plays in 3 minutes
+const SPEED_OPTIONS = [1, 2, 4, 8];
+let speedIndex = 0;
 
 // OSRS-flavored visitor names
 const NAMES = [
@@ -59,8 +72,9 @@ function addChatMessage(playerName, action, detail, eventClass = '') {
   const msg = document.createElement('div');
   msg.className = 'chat-msg';
 
-  const now = new Date();
-  const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+  // Use timeline time for the timestamp display
+  const ts = new Date(timeline.current || Date.now());
+  const time = `${ts.getHours().toString().padStart(2, '0')}:${ts.getMinutes().toString().padStart(2, '0')}`;
 
   const detailClass = eventClass ? `event-name ${eventClass}` : 'page-name';
   msg.innerHTML = `<span class="timestamp">[${time}]</span> <span class="player-name">${playerName}</span> <span class="action">${action}</span> <span class="${detailClass}">${detail}</span>`;
@@ -105,7 +119,6 @@ function showRoomInfo(room) {
   `;
 }
 
-// Map event names to CSS classes and readable labels
 function eventDisplayInfo(eventName) {
   if (eventName.startsWith('scroll')) return { cls: 'event-scroll', verb: 'scrolled', label: eventName.replace('scroll_', '') + '%' };
   if (eventName.startsWith('click')) return { cls: 'event-click', verb: 'clicked', label: eventName.replace('click_', '').replace('_', ' ') };
@@ -113,6 +126,82 @@ function eventDisplayInfo(eventName) {
   if (eventName.startsWith('hover')) return { cls: 'event-hover', verb: 'hovered', label: eventName.replace('hover_', '') };
   if (eventName.startsWith('video')) return { cls: 'event-click', verb: 'video', label: eventName.replace('video_', '') };
   return { cls: 'event-name', verb: 'triggered', label: eventName };
+}
+
+// --- Timeline UI ---
+
+function formatDate(ms) {
+  const d = new Date(ms);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[d.getMonth()]} ${d.getDate()}`;
+}
+
+function formatDateTime(ms) {
+  const d = new Date(ms);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[d.getMonth()]} ${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+}
+
+function updateTimelineUI() {
+  const progress = document.getElementById('timeline-progress');
+  const scrubber = document.getElementById('timeline-scrubber');
+  const currentLabel = document.getElementById('timeline-current-label');
+
+  if (!progress) return;
+
+  const range = timeline.endAt - timeline.startAt;
+  const pct = range > 0 ? ((timeline.current - timeline.startAt) / range) * 100 : 0;
+  const clampedPct = Math.max(0, Math.min(100, pct));
+
+  progress.style.width = `${clampedPct}%`;
+  scrubber.style.left = `${clampedPct}%`;
+  currentLabel.textContent = formatDateTime(timeline.current);
+}
+
+function initTimelineUI() {
+  document.getElementById('timeline-start-label').textContent = formatDate(timeline.startAt);
+  document.getElementById('timeline-end-label').textContent = formatDate(timeline.endAt);
+  updateTimelineUI();
+}
+
+function setupTimeline() {
+  // Play/pause button
+  const playBtn = document.getElementById('timeline-playpause');
+  playBtn.addEventListener('click', () => {
+    timeline.playing = !timeline.playing;
+    playBtn.innerHTML = timeline.playing ? '&#9646;&#9646;' : '&#9654;';
+  });
+
+  // Speed button
+  const speedBtn = document.getElementById('timeline-speed');
+  speedBtn.addEventListener('click', () => {
+    speedIndex = (speedIndex + 1) % SPEED_OPTIONS.length;
+    timeline.speed = SPEED_OPTIONS[speedIndex];
+    speedBtn.textContent = `${SPEED_OPTIONS[speedIndex]}x`;
+  });
+
+  // Click on track to scrub
+  const track = document.getElementById('timeline-track');
+  track.addEventListener('click', (e) => {
+    const rect = track.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    timeline.current = timeline.startAt + pct * (timeline.endAt - timeline.startAt);
+    // Re-queue sessions that haven't been spawned yet at the new position
+    requeueSessions();
+    updateTimelineUI();
+  });
+}
+
+function requeueSessions() {
+  // Reset the queue: only include sessions that haven't been spawned yet (spawnAt > current)
+  timeline.sessionQueue = timeline.allSessions.filter(s => s.spawnAt > timeline.current);
+  // Clear existing characters
+  clearAllCharacters();
+  // Spawn any sessions that should already exist at this timeline position
+  const pastSessions = timeline.allSessions.filter(s => s.spawnAt <= timeline.current);
+  // Only spawn the most recent few to avoid flooding
+  const recent = pastSessions.slice(-8);
+  recent.forEach(s => spawnVisitorWithJourney(s));
 }
 
 // --- Three.js Setup ---
@@ -142,7 +231,6 @@ function initScene() {
   controls.maxDistance = 80;
   controls.target.set(0, 0, -5);
 
-  // Lighting
   scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 
   const sun = new THREE.DirectionalLight(0xfff5e0, 1.2);
@@ -166,7 +254,6 @@ function initScene() {
     renderer.setSize(window.innerWidth, window.innerHeight);
   });
 
-  // Click handler for rooms
   const raycaster = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   renderer.domElement.addEventListener('click', (e) => {
@@ -202,13 +289,11 @@ function spawnVisitorWithJourney(session) {
   const name = getNextName();
   char.visitorName = name;
 
-  // Set up event callbacks
   char.onJourneyStep = (c, step) => {
     const shortPage = step.page === '/' ? 'Home' : step.page;
     addChatMessage(name, 'entered', shortPage);
     c.showChatBubble(shortPage);
 
-    // Schedule event log messages during the stay
     if (step.events && step.events.length > 0) {
       step.events.forEach(evt => {
         const delayMs = evt.at * step.duration * 1000;
@@ -224,7 +309,6 @@ function spawnVisitorWithJourney(session) {
 
   char.setJourney(session, world.pathGraph, world);
 
-  // Track character in the first room
   if (session.steps.length > 0) {
     const firstRoom = world.findRoom(session.steps[0].page);
     if (firstRoom) firstRoom.characters.push(char);
@@ -274,7 +358,6 @@ async function fetchData(range) {
     updateActiveCount(active);
     updateStats(stats);
 
-    // Try fetching real sessions
     let sessions = [];
     try {
       const rawSessions = await API.getSessions(websiteId, startAt, endAt, 50);
@@ -283,36 +366,35 @@ async function fetchData(range) {
       console.warn('Sessions API unavailable:', e.message);
     }
 
-    // If we have real pages, use them
     if (pages && pages.length > 0) {
       setLoadingProgress(70, 'Building world...');
 
-      // If no real sessions, generate synthetic ones from page data
       if (sessions.length === 0) {
-        const demoSessions = API.generateDemoSessions(pages, Math.max(8, active || 5));
-        sessions = demoSessions.filter(s => !s.isBot);
+        sessions = API.generateDemoSessions(pages, Math.max(12, active || 5), startAt, endAt)
+          .filter(s => !s.isBot);
         isDemo = true;
       }
 
-      return { pages, active, stats, sessions };
+      return { pages, active, stats, sessions, startAt, endAt };
     }
 
-    // No page data at all — full demo mode
     throw new Error('No page data');
   } catch (err) {
     console.warn('Using demo data:', err.message);
     isDemo = true;
 
+    const { startAt, endAt } = API.getDateRange(range);
     const demo = API.getDemoData();
     siteName = demo.website.name + ' (Demo)';
     document.getElementById('site-name').textContent = siteName;
     updateActiveCount(demo.active);
     updateStats(demo.stats);
 
-    const sessions = API.generateDemoSessions(demo.pages, 12).filter(s => !s.isBot);
+    const sessions = API.generateDemoSessions(demo.pages, 15, startAt, endAt)
+      .filter(s => !s.isBot);
 
     setLoadingProgress(70, 'Building demo world...');
-    return { pages: demo.pages, active: demo.active, stats: demo.stats, sessions };
+    return { pages: demo.pages, active: demo.active, stats: demo.stats, sessions, startAt, endAt };
   }
 }
 
@@ -320,7 +402,6 @@ async function fetchData(range) {
 
 function clearWorld() {
   if (!world) return;
-  // Remove all house groups and decorations
   const toRemove = [];
   scene.traverse(obj => {
     if (obj !== scene && obj.type !== 'AmbientLight' && obj.type !== 'DirectionalLight' && obj.type !== 'HemisphereLight') {
@@ -350,12 +431,22 @@ async function buildWorld(range) {
   world = new World(scene);
   world.build(data.pages);
 
-  setLoadingProgress(90, 'Spawning visitors...');
+  setLoadingProgress(90, 'Starting timeline...');
 
-  // Stagger character spawns for visual effect
-  data.sessions.forEach((session, i) => {
-    setTimeout(() => spawnVisitorWithJourney(session), i * 600 + Math.random() * 400);
-  });
+  // Set up timeline
+  timeline.startAt = data.startAt;
+  timeline.endAt = data.endAt;
+  timeline.current = data.startAt;
+  timeline.baseSpeed = (data.endAt - data.startAt) / (PLAYBACK_DURATION_S * 1000);
+  timeline.allSessions = data.sessions;
+  timeline.sessionQueue = [...data.sessions];
+  timeline.playing = true;
+
+  // Update play button state
+  const playBtn = document.getElementById('timeline-playpause');
+  if (playBtn) playBtn.innerHTML = '&#9646;&#9646;';
+
+  initTimelineUI();
 
   setLoadingProgress(100, 'Welcome!');
 }
@@ -363,7 +454,7 @@ async function buildWorld(range) {
 // --- Date Filter ---
 
 function setupDateFilter() {
-  const buttons = document.querySelectorAll('.filter-btn');
+  const buttons = document.querySelectorAll('.filter-btn[data-range]');
   buttons.forEach(btn => {
     btn.addEventListener('click', async () => {
       const range = btn.dataset.range;
@@ -373,7 +464,6 @@ function setupDateFilter() {
       buttons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
 
-      // Show loading state
       document.getElementById('chat-messages').innerHTML = '';
       addChatMessage('System', 'reloading', `${range} data...`);
 
@@ -382,47 +472,37 @@ function setupDateFilter() {
   });
 }
 
-// --- Periodic Refresh ---
-
-async function refreshData() {
-  if (isDemo || !websiteId) return;
-
-  try {
-    const { startAt, endAt } = API.getDateRange(currentRange);
-
-    const active = await API.getActiveVisitors(websiteId);
-    updateActiveCount(active);
-
-    // Try fetching new sessions
-    const rawSessions = await API.getSessions(websiteId, startAt, endAt, 10);
-    const sessions = API.filterBotSessions(rawSessions);
-
-    sessions.forEach(session => {
-      // Check if we already have this session spawned
-      const alreadySpawned = characters.some(c => c.journey?.id === session.id);
-      if (!alreadySpawned && session.id) {
-        // Build a synthetic journey for this session
-        // (real session activity would require another API call)
-        const pages = world.rooms.map(r => ({ x: r.name, y: r.visitorCount }));
-        const synth = API.generateDemoSessions(pages, 1)[0];
-        if (synth && !synth.isBot) {
-          spawnVisitorWithJourney(synth);
-        }
-      }
-    });
-  } catch (err) {
-    console.warn('Refresh failed:', err.message);
-  }
-}
-
-// --- Demo Spawner ---
-
-let demoSpawnTimer = 0;
-const DEMO_SPAWN_INTERVAL = 5;
-
 // --- Simulation ---
 
+function updateTimeline(delta) {
+  if (!timeline.playing) return;
+
+  // Advance timeline
+  const advance = delta * 1000 * timeline.baseSpeed * timeline.speed;
+  timeline.current += advance;
+
+  // Loop when reaching the end
+  if (timeline.current >= timeline.endAt) {
+    timeline.current = timeline.startAt;
+    timeline.sessionQueue = [...(timeline.allSessions || [])];
+    clearAllCharacters();
+    document.getElementById('chat-messages').innerHTML = '';
+    addChatMessage('System', 'timeline', 'restarting...');
+  }
+
+  // Spawn sessions whose spawnAt <= current timeline position
+  while (timeline.sessionQueue.length > 0 && timeline.sessionQueue[0].spawnAt <= timeline.current) {
+    const session = timeline.sessionQueue.shift();
+    spawnVisitorWithJourney(session);
+  }
+
+  updateTimelineUI();
+}
+
 function updateSimulation(delta) {
+  // Timeline drives spawning
+  updateTimeline(delta);
+
   // Update all characters
   for (let i = characters.length - 1; i >= 0; i--) {
     const char = characters[i];
@@ -430,7 +510,6 @@ function updateSimulation(delta) {
 
     if (char.isDead) {
       addChatMessage(char.visitorName || 'Visitor', 'logged out', '');
-      // Remove from any room tracking
       if (world) {
         for (const room of world.rooms) {
           const idx = room.characters.indexOf(char);
@@ -439,19 +518,6 @@ function updateSimulation(delta) {
       }
       char.dispose();
       characters.splice(i, 1);
-    }
-  }
-
-  // Demo mode: periodically spawn new visitors
-  if (isDemo && world && world.rooms.length > 0) {
-    demoSpawnTimer += delta;
-    if (demoSpawnTimer > DEMO_SPAWN_INTERVAL) {
-      demoSpawnTimer = 0;
-      const pages = world.rooms.map(r => ({ x: r.name, y: r.visitorCount }));
-      const sessions = API.generateDemoSessions(pages, 1).filter(s => !s.isBot);
-      if (sessions.length > 0) {
-        spawnVisitorWithJourney(sessions[0]);
-      }
     }
   }
 
@@ -464,7 +530,6 @@ function updateSimulation(delta) {
     }
   });
 
-  // Billboard spawn sign
   if (world && world.spawnSign) {
     world.spawnSign.lookAt(camera.position);
   }
@@ -475,15 +540,12 @@ async function main() {
   setLoadingProgress(10, 'Initializing...');
   initScene();
   setupDateFilter();
+  setupTimeline();
 
   await buildWorld(currentRange);
 
   setTimeout(hideLoadingScreen, 500);
 
-  // Periodic refresh
-  setInterval(refreshData, REFRESH_INTERVAL);
-
-  // Render loop
   function animate() {
     requestAnimationFrame(animate);
     const delta = Math.min(clock.getDelta(), 0.1);
