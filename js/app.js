@@ -12,6 +12,7 @@ let websiteId = null;
 let isDemo = false;
 let currentRange = '7d';
 let siteName = '';
+let isBuilding = false; // lock to prevent double-loading
 
 const SPAWN_POS = new THREE.Vector3(0, 0, 8);
 
@@ -307,6 +308,27 @@ function spawnVisitorWithJourney(session) {
     }
   };
 
+  // Debug: check if rooms exist for this session's pages
+  const missingRooms = session.steps.filter(s => !world.findRoom(s.page)).map(s => s.page);
+  if (missingRooms.length > 0) {
+    console.warn(`Visitor ${name}: missing rooms for`, missingRooms);
+  }
+
+  // Debug: check pathfinding before setting journey
+  if (session.steps.length > 0) {
+    const firstRoom = world.findRoom(session.steps[0].page);
+    if (firstRoom) {
+      const testPath = world.pathGraph.getPathFromPosition(char.group.position, firstRoom.nodeId);
+      if (!testPath) {
+        console.warn(`Visitor ${name}: no path from spawn to ${firstRoom.nodeId}`);
+        // Debug: check what nodes exist near spawn
+        const nearestNode = world.pathGraph.findNearestNode(char.group.position);
+        console.warn(`  Nearest node to spawn: ${nearestNode}`);
+        console.warn(`  Target node exists: ${world.pathGraph.nodes.has(firstRoom.nodeId)}`);
+      }
+    }
+  }
+
   char.setJourney(session, world.pathGraph, world);
 
   if (session.steps.length > 0) {
@@ -315,6 +337,14 @@ function spawnVisitorWithJourney(session) {
   }
 
   characters.push(char);
+
+  // Debug: check if character is alive after journey setup
+  if (char.isDead) {
+    console.error(`Visitor ${name}: DEAD immediately after setJourney`);
+  } else {
+    console.log(`Visitor ${name}: spawned OK, waypoints=${char.waypoints.length}, walking=${char.isWalking}`);
+  }
+
   addChatMessage(name, 'logged in', siteName || 'the world');
   return char;
 }
@@ -422,6 +452,9 @@ function clearWorld() {
 }
 
 async function buildWorld(range) {
+  if (isBuilding) return;
+  isBuilding = true;
+
   clearAllCharacters();
   clearWorld();
 
@@ -450,7 +483,17 @@ async function buildWorld(range) {
 
   console.log(`Timeline: ${data.sessions.length} sessions queued, baseSpeed=${timeline.baseSpeed.toFixed(0)}`);
   console.log(`Rooms: ${world.rooms.length}, PathGraph nodes: ${world.pathGraph.nodes.size}`);
+  console.log(`Room names:`, world.rooms.map(r => r.name));
+  console.log(`Session pages:`, data.sessions.slice(0, 3).map(s => s.steps.map(st => st.page)));
 
+  // Debug: dump path graph edges
+  for (const [id, node] of world.pathGraph.nodes) {
+    if (node.neighbors.length === 0) {
+      console.warn(`PathGraph: orphan node "${id}" with no connections`);
+    }
+  }
+
+  isBuilding = false;
   setLoadingProgress(100, 'Welcome!');
 }
 
@@ -461,7 +504,7 @@ function setupDateFilter() {
   buttons.forEach(btn => {
     btn.addEventListener('click', async () => {
       const range = btn.dataset.range;
-      if (range === currentRange) return;
+      if (range === currentRange || isBuilding) return;
 
       currentRange = range;
       buttons.forEach(b => b.classList.remove('active'));
