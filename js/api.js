@@ -1,13 +1,11 @@
-const API_KEY = 'api_TpglL2BuvaXxlhgqAMWbVNPSOevxNgKy';
-const BASE_URL = 'https://api.umami.is/v1';
+// Proxied through Cloudflare Functions — API key stays server-side
+const BASE_URL = '/api';
 
 async function umamiGet(path, params = {}) {
-  const url = new URL(`${BASE_URL}${path}`);
+  const url = new URL(`${BASE_URL}${path}`, window.location.origin);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 
-  const res = await fetch(url.toString(), {
-    headers: { 'x-umami-api-key': API_KEY },
-  });
+  const res = await fetch(url.toString());
 
   if (!res.ok) throw new Error(`Umami API ${res.status}: ${res.statusText}`);
   return res.json();
