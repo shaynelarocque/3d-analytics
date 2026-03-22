@@ -388,22 +388,22 @@ async function fetchData(range) {
     updateActiveCount(active);
     updateStats(stats);
 
-    let sessions = [];
-    try {
-      const rawSessions = await API.getSessions(websiteId, startAt, endAt, 50);
-      sessions = API.filterBotSessions(rawSessions);
-    } catch (e) {
-      console.warn('Sessions API unavailable:', e.message);
-    }
-
     if (pages && pages.length > 0) {
       setLoadingProgress(70, 'Building world...');
 
-      if (sessions.length === 0) {
-        sessions = API.generateDemoSessions(pages, Math.max(12, active || 5), startAt, endAt)
-          .filter(s => !s.isBot);
-        isDemo = true;
+      // Raw API sessions don't have journey steps — always generate
+      // synthetic journeys from page data, using real session count as a guide
+      let realSessionCount = 0;
+      try {
+        const rawSessions = await API.getSessions(websiteId, startAt, endAt, 50);
+        realSessionCount = API.filterBotSessions(rawSessions).length;
+      } catch (e) {
+        console.warn('Sessions API unavailable:', e.message);
       }
+
+      const count = Math.max(12, realSessionCount || active || 5);
+      const sessions = API.generateDemoSessions(pages, count, startAt, endAt)
+        .filter(s => !s.isBot);
 
       return { pages, active, stats, sessions, startAt, endAt };
     }
@@ -484,14 +484,7 @@ async function buildWorld(range) {
   console.log(`Timeline: ${data.sessions.length} sessions queued, baseSpeed=${timeline.baseSpeed.toFixed(0)}`);
   console.log(`Rooms: ${world.rooms.length}, PathGraph nodes: ${world.pathGraph.nodes.size}`);
   console.log(`Room names:`, world.rooms.map(r => r.name));
-  console.log(`Session pages:`, data.sessions.slice(0, 3).map(s => s.steps.map(st => st.page)));
-
-  // Debug: dump path graph edges
-  for (const [id, node] of world.pathGraph.nodes) {
-    if (node.neighbors.length === 0) {
-      console.warn(`PathGraph: orphan node "${id}" with no connections`);
-    }
-  }
+  console.log(`First session pages:`, data.sessions[0]?.steps?.map(st => st.page));
 
   isBuilding = false;
   setLoadingProgress(100, 'Welcome!');
