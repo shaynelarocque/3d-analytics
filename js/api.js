@@ -18,7 +18,7 @@ export async function getWebsites() {
 
 export async function getActiveVisitors(websiteId) {
   const data = await umamiGet(`/websites/${websiteId}/active`);
-  return data.x ?? data;
+  return data.visitors ?? data.x ?? 0;
 }
 
 export async function getStats(websiteId, startAt, endAt) {

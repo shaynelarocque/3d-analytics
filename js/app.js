@@ -73,11 +73,13 @@ function addChatMessage(playerName, action, pageName) {
 // --- UI Updates ---
 function updateStats(stats) {
   const el = (id) => document.getElementById(id);
-  if (stats.pageviews) el('stat-today').textContent = stats.pageviews.value?.toLocaleString() ?? stats.pageviews;
-  if (stats.visitors) el('stat-pages').textContent = stats.visitors.value?.toLocaleString() ?? stats.visitors;
-  if (stats.bounces) el('stat-bounces').textContent = stats.bounces.value?.toLocaleString() ?? stats.bounces;
-  if (stats.totaltime) {
-    const avgTime = stats.visitors?.value ? Math.round(stats.totaltime.value / stats.visitors.value) : 0;
+  const val = (v) => typeof v === 'object' && v !== null ? v.value : v;
+  if (stats.pageviews != null) el('stat-today').textContent = val(stats.pageviews)?.toLocaleString() ?? '0';
+  if (stats.visitors != null) el('stat-pages').textContent = val(stats.visitors)?.toLocaleString() ?? '0';
+  if (stats.bounces != null) el('stat-bounces').textContent = val(stats.bounces)?.toLocaleString() ?? '0';
+  if (stats.totaltime != null) {
+    const visitors = val(stats.visitors) || 1;
+    const avgTime = Math.round(val(stats.totaltime) / visitors);
     el('stat-time').textContent = avgTime > 60 ? `${Math.round(avgTime / 60)}m` : `${avgTime}s`;
   }
 }
@@ -239,20 +241,30 @@ async function fetchData() {
     setLoadingProgress(40, 'Fetching visitor data...');
 
     const now = Date.now();
-    const dayAgo = now - 86400000;
+    const monthAgo = now - 30 * 86400000;
 
     const [active, stats, pages] = await Promise.all([
       API.getActiveVisitors(websiteId),
-      API.getStats(websiteId, dayAgo, now),
-      API.getMetrics(websiteId, 'url', dayAgo, now, 20),
+      API.getStats(websiteId, monthAgo, now),
+      API.getMetrics(websiteId, 'url', monthAgo, now, 20),
     ]);
 
     setLoadingProgress(70, 'Building world...');
 
     updateActiveCount(active);
     updateStats(stats);
-    pageData = pages;
 
+    // If no page metrics yet, use demo pages with real site name
+    if (!pages || pages.length === 0) {
+      const demo = API.getDemoData();
+      pageData = demo.pages;
+      isDemo = true;
+      document.getElementById('site-name').textContent =
+        (site.name || site.domain) + ' (No data yet - demo rooms)';
+      return { pages: demo.pages, active, stats };
+    }
+
+    pageData = pages;
     return { pages, active, stats };
   } catch (err) {
     console.warn('API unavailable, using demo data:', err.message);
