@@ -12,7 +12,10 @@ export class PathGraph {
   addEdge(id1, id2) {
     const n1 = this.nodes.get(id1);
     const n2 = this.nodes.get(id2);
-    if (!n1 || !n2) return;
+    if (!n1 || !n2) {
+      console.warn(`%c[PathGraph] addEdge failed: ${!n1 ? id1 : id2} not found`, 'color:#ff9800');
+      return;
+    }
     if (!n1.neighbors.includes(id2)) n1.neighbors.push(id2);
     if (!n2.neighbors.includes(id1)) n2.neighbors.push(id1);
   }
@@ -84,14 +87,39 @@ export class PathGraph {
   // Convenience: find path from an arbitrary position to a target node
   getPathFromPosition(position, targetNodeId) {
     const nearestId = this.findNearestNode(position);
-    if (!nearestId) return null;
+    if (!nearestId) {
+      console.warn(`%c[PathGraph] No nearest node found for position`, 'color:#ff9800', position);
+      return null;
+    }
     const path = this.findPath(nearestId, targetNodeId);
-    if (!path) return null;
-    // Prepend current position if not already at the nearest node
+    if (!path) {
+      console.warn(`%c[PathGraph] No path: ${nearestId} → ${targetNodeId}`, 'color:#ff9800');
+      // Debug: show connectivity
+      const startNode = this.nodes.get(nearestId);
+      const endNode = this.nodes.get(targetNodeId);
+      console.warn(`  Start "${nearestId}" neighbors: [${startNode?.neighbors.join(', ')}]`);
+      console.warn(`  End "${targetNodeId}" exists: ${!!endNode}, neighbors: [${endNode?.neighbors.join(', ')}]`);
+      return null;
+    }
     if (position.distanceTo(path[0]) > 0.5) {
       path.unshift(position.clone());
     }
     return path;
+  }
+
+  // Debug: dump full graph to console
+  dump() {
+    console.groupCollapsed(`%c[PathGraph] ${this.nodes.size} nodes`, 'color:#ce93d8');
+    for (const [id, node] of this.nodes) {
+      const pos = node.position;
+      console.log(`  ${id} (${pos.x.toFixed(1)}, ${pos.z.toFixed(1)}) → [${node.neighbors.join(', ')}]`);
+    }
+    // Check for orphans
+    const orphans = [...this.nodes.entries()].filter(([, n]) => n.neighbors.length === 0);
+    if (orphans.length > 0) {
+      console.warn(`  ⚠ ${orphans.length} orphan nodes:`, orphans.map(([id]) => id));
+    }
+    console.groupEnd();
   }
 
   _heuristic(id1, id2) {

@@ -151,6 +151,12 @@ function groupPagesIntoHouses(pages) {
     }
   }
 
+  console.groupCollapsed(`%c[World] Grouped ${pages.length} pages → ${houses.length} houses`, 'color:#ce93d8');
+  houses.forEach(h => {
+    console.log(`  ${h.name} (${h.pages.length} rooms): [${h.pages.map(p => p.x).join(', ')}]`);
+  });
+  console.groupEnd();
+
   return houses;
 }
 
@@ -179,6 +185,9 @@ export class World {
     this.houses = groupPagesIntoHouses(pages);
     this.layoutHouses();
     this.createDecorations();
+
+    console.log(`%c[World] Build complete: ${this.rooms.length} rooms, ${this.houses.length} houses`, 'color:#ce93d8');
+    this.pathGraph.dump();
 
     return this.rooms;
   }

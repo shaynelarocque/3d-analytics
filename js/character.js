@@ -148,12 +148,14 @@ export class Character {
     this.journeyStepIndex = 0;
     this.pathGraph = pathGraph;
     this.worldRef = worldRef;
+    const pages = journey.steps?.map(s => s.page) || [];
+    console.log(`%c[Character] setJourney: ${pages.length} steps → [${pages.join(' → ')}]`, 'color:#80cbc4');
     this._startNextStep();
   }
 
   _startNextStep() {
     if (!this.journey || this.journeyStepIndex >= this.journey.steps.length) {
-      // Journey complete — leave
+      console.log(`%c[Character] Journey complete, leaving`, 'color:#80cbc4');
       this._leave();
       return;
     }
@@ -162,19 +164,25 @@ export class Character {
     const room = this.worldRef.findRoom(step.page);
 
     if (!room) {
-      // Room not found, skip this step
+      console.warn(`%c[Character] Room not found: "${step.page}", skipping step ${this.journeyStepIndex}`, 'color:#ff9800');
       this.journeyStepIndex++;
       this._startNextStep();
       return;
     }
 
     // Find path from current position to room interior
+    const pos = this.group.position;
+    console.log(`%c[Character] Step ${this.journeyStepIndex}: "${step.page}" → node "${room.nodeId}" (from ${pos.x.toFixed(1)},${pos.z.toFixed(1)})`, 'color:#80cbc4');
+
     const path = this.pathGraph.getPathFromPosition(this.group.position, room.nodeId);
     if (!path) {
+      console.error(`%c[Character] ✗ No path to "${room.nodeId}"`, 'color:#ff5252');
       this.journeyStepIndex++;
       this._startNextStep();
       return;
     }
+
+    console.log(`%c[Character] ✓ Path found: ${path.length} waypoints, duration=${step.duration.toFixed(1)}s`, 'color:#69f0ae');
 
     this.currentRoom = room;
     this.roomBounds = room.bounds;
@@ -197,11 +205,13 @@ export class Character {
     const exitNodeId = 'exit';
     const path = this.pathGraph.getPathFromPosition(this.group.position, exitNodeId);
     if (path) {
+      console.log(`%c[Character] Leaving via ${path.length} waypoints`, 'color:#80cbc4');
       this.waypoints = path;
       this.waypointIndex = 0;
       this.isWalking = true;
       this.currentSpeed = WALK_SPEED;
     } else {
+      console.error(`%c[Character] ✗ No path to exit — dying immediately`, 'color:#ff5252');
       this.isDead = true;
     }
   }

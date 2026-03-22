@@ -481,10 +481,18 @@ async function buildWorld(range) {
 
   initTimelineUI();
 
-  console.log(`Timeline: ${data.sessions.length} sessions queued, baseSpeed=${timeline.baseSpeed.toFixed(0)}`);
-  console.log(`Rooms: ${world.rooms.length}, PathGraph nodes: ${world.pathGraph.nodes.size}`);
-  console.log(`Room names:`, world.rooms.map(r => r.name));
-  console.log(`First session pages:`, data.sessions[0]?.steps?.map(st => st.page));
+  console.group(`%c[App] buildWorld("${range}") complete`, 'color:#ffcc00; font-weight:bold');
+  console.log(`Timeline: ${data.sessions.length} sessions queued`);
+  console.log(`  baseSpeed: ${timeline.baseSpeed.toFixed(0)}x (${PLAYBACK_DURATION_S}s playback)`);
+  console.log(`  range: ${new Date(data.startAt).toISOString()} → ${new Date(data.endAt).toISOString()}`);
+  console.log(`Rooms (${world.rooms.length}):`, world.rooms.map(r => `${r.name} [${r.nodeId}]`));
+  console.log(`Houses (${world.houses.length}):`, world.houses.map(h => `${h.name} (${h.rooms.length} rooms, door=${h.doorNodeId})`));
+  console.log(`First 3 sessions:`);
+  data.sessions.slice(0, 3).forEach((s, i) => {
+    const pages = s.steps?.map(st => st.page) || ['<no steps>'];
+    console.log(`  #${i}: id=${s.id}, spawnAt=${new Date(s.spawnAt).toISOString()}, pages=[${pages.join(' → ')}]`);
+  });
+  console.groupEnd();
 
   isBuilding = false;
   setLoadingProgress(100, 'Welcome!');
@@ -497,8 +505,12 @@ function setupDateFilter() {
   buttons.forEach(btn => {
     btn.addEventListener('click', async () => {
       const range = btn.dataset.range;
-      if (range === currentRange || isBuilding) return;
+      if (range === currentRange || isBuilding) {
+        console.log(`%c[Filter] Ignored click: range=${range}, current=${currentRange}, building=${isBuilding}`, 'color:#888');
+        return;
+      }
 
+      console.log(`%c[Filter] Switching range: ${currentRange} → ${range}`, 'color:#ffcc00');
       currentRange = range;
       buttons.forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
@@ -530,13 +542,19 @@ function updateTimeline(delta) {
   }
 
   // Spawn sessions whose spawnAt <= current timeline position
+  let spawned = 0;
   while (timeline.sessionQueue.length > 0 && timeline.sessionQueue[0].spawnAt <= timeline.current) {
     const session = timeline.sessionQueue.shift();
     try {
+      console.log(`%c[Timeline] Spawning session ${session.id} at ${new Date(session.spawnAt).toISOString()} (queue: ${timeline.sessionQueue.length} left)`, 'color:#fff176');
       spawnVisitorWithJourney(session);
+      spawned++;
     } catch (err) {
-      console.warn('Failed to spawn visitor:', err.message);
+      console.error(`%c[Timeline] ✗ Failed to spawn:`, 'color:#ff5252', err);
     }
+  }
+  if (spawned > 0) {
+    console.log(`%c[Timeline] Spawned ${spawned} visitors, ${characters.length} total alive`, 'color:#69f0ae');
   }
 
   updateTimelineUI();
@@ -552,6 +570,7 @@ function updateSimulation(delta) {
     char.update(delta);
 
     if (char.isDead) {
+      console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed (pos: ${char.group.position.x.toFixed(1)},${char.group.position.z.toFixed(1)}, leaving=${char.isLeaving})`, 'color:#ef9a9a');
       addChatMessage(char.visitorName || 'Visitor', 'logged out', '');
       if (world) {
         for (const room of world.rooms) {

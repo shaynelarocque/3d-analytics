@@ -5,10 +5,22 @@ async function umamiGet(path, params = {}) {
   const url = new URL(`${BASE_URL}${path}`, window.location.origin);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
 
-  const res = await fetch(url.toString());
+  const fullUrl = url.toString();
+  console.log(`%c[API] GET ${path}`, 'color:#4fc3f7', params);
+  const t0 = performance.now();
 
-  if (!res.ok) throw new Error(`Umami API ${res.status}: ${res.statusText}`);
-  return res.json();
+  const res = await fetch(fullUrl);
+  const elapsed = (performance.now() - t0).toFixed(0);
+
+  if (!res.ok) {
+    console.error(`%c[API] ${res.status} ${res.statusText} (${elapsed}ms)`, 'color:#ff5252', fullUrl);
+    throw new Error(`Umami API ${res.status}: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  const size = JSON.stringify(data).length;
+  console.log(`%c[API] 200 OK (${elapsed}ms, ${size}b)`, 'color:#69f0ae', path, data);
+  return data;
 }
 
 // --- Date range helpers ---
