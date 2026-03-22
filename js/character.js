@@ -217,17 +217,13 @@ export class Character {
 
     this.currentRoom = room;
     this.roomBounds = room.bounds;
+    this.pendingStep = step; // stored until arrival
     this.idleTimer = step.duration;
     this.isIdling = false;
     this.isWalking = true;
     this.currentSpeed = WALK_SPEED;
     this.waypoints = path;
     this.waypointIndex = 0;
-
-    // Callback for chat log
-    if (this.onJourneyStep) {
-      this.onJourneyStep(this, step);
-    }
   }
 
   _leave() {
@@ -276,9 +272,14 @@ export class Character {
           if (this.isLeaving) {
             this.isDead = true;
           } else {
-            // Start idling in room
+            // Arrived at room — start idling and fire arrival callback
             this.isIdling = true;
             this.wanderTimer = 1 + Math.random() * 2;
+            if (this.onArrivedAtRoom && this.pendingStep) {
+              console.log(`%c[Character] Arrived at "${this.pendingStep.page}", idling for ${this.pendingStep.duration.toFixed(1)}s`, 'color:#69f0ae');
+              this.onArrivedAtRoom(this, this.pendingStep);
+              this.pendingStep = null;
+            }
           }
         }
       } else {

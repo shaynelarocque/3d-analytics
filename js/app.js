@@ -291,11 +291,13 @@ function spawnVisitorWithJourney(session) {
   const name = getNextName();
   char.visitorName = name;
 
-  char.onJourneyStep = (c, step) => {
+  // Events only fire AFTER the character physically arrives at the room
+  char.onArrivedAtRoom = (c, step) => {
     const shortPage = step.page === '/' ? 'Home' : step.page;
     addChatMessage(name, 'entered', shortPage);
     c.showChatBubble(shortPage);
 
+    // Schedule events during the idle/wander period (after arrival)
     if (step.events && step.events.length > 0) {
       step.events.forEach(evt => {
         const delayMs = evt.at * step.duration * 1000;
