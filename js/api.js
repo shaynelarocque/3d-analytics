@@ -89,6 +89,12 @@ export async function getEvents(websiteId, startAt, endAt) {
   return data.data || data || [];
 }
 
+// Fetch event name metrics (top custom events by count)
+export async function getEventMetrics(websiteId, startAt, endAt, limit = 50) {
+  return getMetrics(websiteId, 'event', startAt, endAt, limit);
+}
+
+
 // Min session duration filter (ms)
 export const MIN_SESSION_DURATION_MS = 5000;
 
@@ -134,7 +140,7 @@ export function getDemoData() {
       { x: '/works/district3-checkin', y: 89 },
       { x: '/works/district3-dibs', y: 67 },
       { x: '/works/briefbot', y: 102 },
-      { x: '/works/play/3d-analytics', y: 45 },
+      { x: '/works/play/portfolio-analytics-tycoon-2', y: 45 },
       { x: '/works/play/checkplease', y: 38 },
       { x: '/works/play/occasionaltranspo', y: 29 },
       { x: '/works/play/nasty-savings', y: 22 },
@@ -148,11 +154,13 @@ export function getDemoData() {
 
 // Generate synthetic sessions with journeys + events for demo mode
 // startAt/endAt are ms timestamps for distributing sessions across the range
-export function generateDemoSessions(pages, count = 15, startAt = null, endAt = null) {
+// realEventNames: optional array of real event name strings from Umami API
+export function generateDemoSessions(pages, count = 15, startAt = null, endAt = null, realEventNames = null) {
   const sessions = [];
   const rangeStart = startAt || (Date.now() - 7 * 86400000);
   const rangeEnd = endAt || Date.now();
   const rangeMs = rangeEnd - rangeStart;
+  const eventPool = (realEventNames && realEventNames.length > 0) ? realEventNames : DEMO_EVENTS;
 
   for (let i = 0; i < count; i++) {
     const numSteps = 1 + Math.floor(Math.random() * 4);
@@ -166,7 +174,7 @@ export function generateDemoSessions(pages, count = 15, startAt = null, endAt = 
 
       for (let e = 0; e < numEvents; e++) {
         events.push({
-          name: DEMO_EVENTS[Math.floor(Math.random() * DEMO_EVENTS.length)],
+          name: eventPool[Math.floor(Math.random() * eventPool.length)],
           at: Math.random(),
         });
       }

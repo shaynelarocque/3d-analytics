@@ -73,6 +73,8 @@ export class Character {
     // State
     this.isLeaving = false;
     this.isDead = false;
+    this.isRiding = false;
+    this.currentRide = null;
     this.animTime = Math.random() * Math.PI * 2;
     this.chatBubble = null;
     this.chatTimer = 0;
@@ -80,6 +82,7 @@ export class Character {
     // References (set by app)
     this.pathGraph = null;
     this.worldRef = null;
+    this.uiScene = null; // crisp overlay scene for chat bubbles
     this.onJourneyStep = null; // callback(character, stepInfo)
 
     this.buildModel();
@@ -230,16 +233,17 @@ export class Character {
   _leave() {
     this.isLeaving = true;
     this.currentRoom = null;
-    const exitNodeId = 'exit';
-    const path = this.pathGraph.getPathFromPosition(this.group.position, exitNodeId);
+    // Try parking first, fall back to exit
+    const targetNode = this.pathGraph.nodes.has('parking') ? 'parking' : 'exit';
+    const path = this.pathGraph.getPathFromPosition(this.group.position, targetNode);
     if (path) {
-      console.log(`%c[Character] Leaving via ${path.length} waypoints`, 'color:#80cbc4');
+      console.log(`%c[Character] Leaving via ${path.length} waypoints to ${targetNode}`, 'color:#80cbc4');
       this.waypoints = path;
       this.waypointIndex = 0;
       this.isWalking = true;
       this.currentSpeed = WALK_SPEED;
     } else {
-      console.error(`%c[Character] ✗ No path to exit — dying immediately`, 'color:#ff5252');
+      console.error(`%c[Character] ✗ No path to ${targetNode} — dying immediately`, 'color:#ff5252');
       this.isDead = true;
     }
   }
@@ -273,13 +277,22 @@ export class Character {
           if (this.isLeaving) {
             this.isDead = true;
           } else {
-            // Arrived at room — start idling and fire arrival callback
-            this.isIdling = true;
-            this.wanderTimer = 1 + Math.random() * 2;
+            // Arrived — board ride if available, otherwise idle/wander
             if (this.onArrivedAtRoom && this.pendingStep) {
               console.log(`%c[Character] Arrived at "${this.pendingStep.page}", idling for ${this.pendingStep.duration.toFixed(1)}s`, 'color:#69f0ae');
               this.onArrivedAtRoom(this, this.pendingStep);
               this.pendingStep = null;
+            }
+
+            if (this.currentRoom?.ride && this.currentRoom.ride.hasAvailableSeat()) {
+              // Board the ride!
+              this.isRiding = true;
+              this.currentRide = this.currentRoom.ride;
+              this.currentRide.boardGuest(this);
+            } else {
+              // Normal idle/wander in bounds
+              this.isIdling = true;
+              this.wanderTimer = 1 + Math.random() * 2;
             }
           }
         }
@@ -287,6 +300,19 @@ export class Character {
         dir.normalize();
         this.group.position.add(dir.multiplyScalar(this.currentSpeed * delta));
         this.group.rotation.y = Math.atan2(dir.x, dir.z);
+      }
+    }
+
+    // Riding a ride
+    if (this.isRiding) {
+      this.idleTimer -= delta;
+      if (this.idleTimer <= 0) {
+        // Disembark
+        this.currentRide.disembarkGuest(this);
+        this.isRiding = false;
+        this.currentRide = null;
+        this.journeyStepIndex++;
+        this._startNextStep();
       }
     }
 
@@ -317,14 +343,24 @@ export class Character {
     }
 
     // Handle wander→idle transition
-    if (this._wanderReturnToIdle && !this.isWalking && !this.isIdling && !this.isLeaving && !this.isDead) {
+    if (this._wanderReturnToIdle && !this.isWalking && !this.isIdling && !this.isLeaving && !this.isDead && !this.isRiding) {
       this._wanderReturnToIdle = false;
       this.isIdling = true;
       this.wanderTimer = 1.5 + Math.random() * 2;
     }
 
     // Animations
-    if (this.isWalking) {
+    if (this.isRiding) {
+      // Riding pose: arms raised, subtle sway
+      this.leftLegPivot.rotation.x *= 0.9;
+      this.rightLegPivot.rotation.x *= 0.9;
+      this.leftArmPivot.rotation.x = -2.2 + Math.sin(this.animTime * 0.8) * 0.15;
+      this.rightArmPivot.rotation.x = -2.2 + Math.sin(this.animTime * 0.8 + 1) * 0.15;
+      const breathe = Math.sin(this.animTime * 0.5) * 0.01;
+      this.torso.position.y = 1.1 + breathe;
+      this.head.position.y = 1.65 + breathe;
+      this.head.rotation.y = Math.sin(this.animTime * 0.2) * 0.4;
+    } else if (this.isWalking) {
       const speed = this.currentSpeed === WANDER_SPEED ? 0.4 : 0.6;
       const swing = Math.sin(this.animTime) * speed;
       this.leftLegPivot.rotation.x = swing;
@@ -345,11 +381,16 @@ export class Character {
       this.head.rotation.y = Math.sin(this.animTime * 0.15) * 0.3;
     }
 
-    // Chat bubble timer
+    // Chat bubble: track position + timer
+    if (this.chatBubble && this.uiScene) {
+      const worldPos = new THREE.Vector3();
+      this.group.getWorldPosition(worldPos);
+      this.chatBubble.position.set(worldPos.x, worldPos.y + 2.8, worldPos.z);
+    }
     if (this.chatTimer > 0) {
       this.chatTimer -= delta;
       if (this.chatTimer <= 0 && this.chatBubble) {
-        this.group.remove(this.chatBubble);
+        (this.uiScene || this.group).remove(this.chatBubble);
         this.chatBubble = null;
       }
     }
@@ -357,7 +398,7 @@ export class Character {
 
   showChatBubble(text) {
     if (this.chatBubble) {
-      this.group.remove(this.chatBubble);
+      (this.uiScene || this.group).remove(this.chatBubble);
     }
 
     const canvas = document.createElement('canvas');
@@ -393,20 +434,32 @@ export class Character {
       map: texture, transparent: true, depthTest: false,
     });
     this.chatBubble = new THREE.Sprite(spriteMat);
-    this.chatBubble.position.y = 2.8;
     this.chatBubble.scale.set(3.5, 0.9, 1);
-    this.group.add(this.chatBubble);
+
+    if (this.uiScene) {
+      // Place in crisp overlay scene — position tracked each frame
+      const worldPos = new THREE.Vector3();
+      this.group.getWorldPosition(worldPos);
+      this.chatBubble.position.set(worldPos.x, worldPos.y + 2.8, worldPos.z);
+      this.uiScene.add(this.chatBubble);
+    } else {
+      this.chatBubble.position.y = 2.8;
+      this.group.add(this.chatBubble);
+    }
 
     this.chatTimer = 4;
   }
 
   dispose() {
     this.scene.remove(this.group);
-    // Only dispose chat bubble textures (unique per character)
-    // Shared geometries and materials are pooled — do NOT dispose them
-    if (this.chatBubble?.material?.map) {
-      this.chatBubble.material.map.dispose();
-      this.chatBubble.material.dispose();
+    // Clean up chat bubble from uiScene if present
+    if (this.chatBubble) {
+      (this.uiScene || this.group).remove(this.chatBubble);
+      if (this.chatBubble.material?.map) {
+        this.chatBubble.material.map.dispose();
+        this.chatBubble.material.dispose();
+      }
+      this.chatBubble = null;
     }
   }
 }

@@ -7,13 +7,17 @@ import * as API from './api.js';
 // --- State ---
 let scene, camera, renderer, controls, clock;
 let renderTarget, pixelQuad, pixelScene, pixelCamera; // pixelation
+let uiScene; // crisp overlay scene (signs, chat bubbles) rendered at full res
 let world;
 let characters = [];
 let websiteId = null;
 let isDemo = false;
-let currentRange = '7d';
+let currentRange = '90d';
 let siteName = '';
 let isBuilding = false; // lock to prevent double-loading
+let followTarget = null; // character to follow with camera
+let keysDown = {};       // arrow key state
+let activeCars = [];     // animated cars driving in/out
 
 const SPAWN_POS = new THREE.Vector3(0, 0, 8);
 
@@ -123,11 +127,18 @@ function showRoomInfo(room) {
 
 function eventDisplayInfo(eventName) {
   if (eventName.startsWith('scroll')) return { cls: 'event-scroll', verb: 'scrolled', label: eventName.replace('scroll_', '') + '%' };
-  if (eventName.startsWith('click')) return { cls: 'event-click', verb: 'clicked', label: eventName.replace('click_', '').replace('_', ' ') };
+  if (eventName.startsWith('click')) return { cls: 'event-click', verb: 'clicked', label: eventName.replace('click_', '').replace(/_/g, ' ') };
   if (eventName.startsWith('form')) return { cls: 'event-form', verb: 'used form:', label: eventName.replace('form_', '') };
-  if (eventName.startsWith('hover')) return { cls: 'event-hover', verb: 'hovered', label: eventName.replace('hover_', '') };
+  if (eventName.startsWith('hover')) return { cls: 'event-hover', verb: 'hovered', label: eventName.replace('hover_', '').replace(/_/g, ' ') };
   if (eventName.startsWith('video')) return { cls: 'event-click', verb: 'video', label: eventName.replace('video_', '') };
-  return { cls: 'event-name', verb: 'triggered', label: eventName };
+  if (eventName.startsWith('share')) return { cls: 'event-click', verb: 'shared', label: eventName.replace('share_', '').replace(/_/g, ' ') };
+  if (eventName.startsWith('copy')) return { cls: 'event-click', verb: 'copied', label: eventName.replace('copy_', '').replace(/_/g, ' ') };
+  if (eventName.startsWith('download')) return { cls: 'event-click', verb: 'downloaded', label: eventName.replace('download_', '').replace(/_/g, ' ') };
+  if (eventName.startsWith('toggle')) return { cls: 'event-name', verb: 'toggled', label: eventName.replace('toggle_', '').replace(/_/g, ' ') };
+  if (eventName.startsWith('open')) return { cls: 'event-name', verb: 'opened', label: eventName.replace('open_', '').replace(/_/g, ' ') };
+  if (eventName.startsWith('close')) return { cls: 'event-name', verb: 'closed', label: eventName.replace('close_', '').replace(/_/g, ' ') };
+  // Generic: use the event name as-is with underscores replaced
+  return { cls: 'event-name', verb: 'triggered', label: eventName.replace(/_/g, ' ') };
 }
 
 // --- Timeline UI ---
@@ -236,6 +247,7 @@ function setupPixelation() {
 // --- Three.js Setup ---
 function initScene() {
   scene = new THREE.Scene();
+  uiScene = new THREE.Scene(); // crisp overlay for text
   // No fog — RCT2 is crisp edge-to-edge
 
   // Isometric orthographic camera (RCT2-style dimetric)
@@ -274,6 +286,22 @@ function initScene() {
   controls.target.set(0, 0, -5);
   controls.enablePan = true;
   controls.panSpeed = 1.5;
+  // Left-click pans (since rotation is disabled)
+  controls.mouseButtons = {
+    LEFT: THREE.MOUSE.PAN,
+    MIDDLE: THREE.MOUSE.DOLLY,
+    RIGHT: THREE.MOUSE.PAN,
+  };
+
+  // Arrow key panning
+  window.addEventListener('keydown', (e) => {
+    keysDown[e.key] = true;
+    // Escape clears follow target
+    if (e.key === 'Escape' && followTarget) {
+      stopFollowing();
+    }
+  });
+  window.addEventListener('keyup', (e) => { keysDown[e.key] = false; });
 
   // Brighter, flatter lighting for RCT2 look
   scene.add(new THREE.AmbientLight(0xffffff, 0.7));
@@ -312,17 +340,30 @@ function initScene() {
     mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
     raycaster.setFromCamera(mouse, camera);
 
-    if (world) {
-      const intersects = raycaster.intersectObjects(world.clickableObjects);
-      if (intersects.length > 0) {
-        let obj = intersects[0].object;
-        while (obj && (!obj.userData || obj.userData.type !== 'room')) {
-          obj = obj.parent;
-        }
-        if (obj && obj.userData.room) {
-          showRoomInfo(obj.userData.room);
-        }
+    // Check characters first (click to follow)
+    const charMeshes = [];
+    for (const char of characters) {
+      char.group.traverse(child => { if (child.isMesh) charMeshes.push(child); });
+    }
+    const charHits = raycaster.intersectObjects(charMeshes);
+    if (charHits.length > 0) {
+      // Find which character owns this mesh
+      let hitObj = charHits[0].object;
+      const hitChar = characters.find(c => {
+        let found = false;
+        c.group.traverse(child => { if (child === hitObj) found = true; });
+        return found;
+      });
+      if (hitChar) {
+        startFollowing(hitChar);
+        return;
       }
+    }
+
+    // No character hit — stop following if we were
+    if (followTarget) {
+      stopFollowing();
+      return;
     }
   });
 
@@ -332,18 +373,22 @@ function initScene() {
 // --- Character / Journey Management ---
 
 function spawnVisitorWithJourney(session) {
-  const spawnJitter = SPAWN_POS.clone().add(
-    new THREE.Vector3((Math.random() - 0.5) * 4, 0, (Math.random() - 0.5) * 2)
-  );
+  // Spawn a car that drives in — character appears when car arrives
+  spawnArrivalCar(session);
+  return null;
+}
 
-  const char = new Character(scene, spawnJitter);
+function _spawnCharacterFromCar(session, spawnPos) {
+  const char = new Character(scene, spawnPos);
   const name = getNextName();
   char.visitorName = name;
 
-  // Events only fire AFTER the character physically arrives at the room
+  // Events only fire AFTER the character physically arrives at the ride
   char.onArrivedAtRoom = (c, step) => {
     const shortPage = step.page === '/' ? 'Home' : step.page;
-    addChatMessage(name, 'is looking at', shortPage);
+    const room = world.findRoom(step.page);
+    const rideVerb = room?.ride ? 'is riding' : 'is looking at';
+    addChatMessage(name, rideVerb, shortPage);
     c.showChatBubble(shortPage);
 
     // Schedule events during the idle/wander period (after arrival)
@@ -381,6 +426,7 @@ function spawnVisitorWithJourney(session) {
     }
   }
 
+  char.uiScene = uiScene;
   char.setJourney(session, world.pathGraph, world);
 
   if (session.steps.length > 0) {
@@ -402,13 +448,32 @@ function spawnVisitorWithJourney(session) {
 }
 
 function clearAllCharacters() {
+  // Remove any active cars
+  for (const car of activeCars) {
+    scene.remove(car.group);
+  }
+  activeCars = [];
+
   for (const char of characters) {
+    // If character is riding, disembark first
+    if (char.isRiding && char.currentRide) {
+      char.currentRide.disembarkGuest(char);
+      char.isRiding = false;
+      char.currentRide = null;
+    }
     char.dispose();
   }
   characters = [];
   if (world) {
     for (const room of world.rooms) {
       room.characters = [];
+    }
+    // Clear ride seat occupancy
+    for (const ride of world.rides) {
+      for (const seat of ride.seats) {
+        seat.occupied = false;
+        seat.character = null;
+      }
     }
   }
 }
@@ -443,18 +508,30 @@ async function fetchData(range) {
     if (pages && pages.length > 0) {
       setLoadingProgress(70, 'Building world...');
 
-      // Raw API sessions don't have journey steps — always generate
-      // synthetic journeys from page data, using real session count as a guide
+      // Fetch real event names and session counts in parallel
       let realSessionCount = 0;
-      try {
-        const rawSessions = await API.getSessions(websiteId, startAt, endAt, 50);
+      let realEventNames = null;
+
+      const [sessionsResult, eventsResult] = await Promise.allSettled([
+        API.getSessions(websiteId, startAt, endAt, 50),
+        API.getEventMetrics(websiteId, startAt, endAt, 50),
+      ]);
+
+      if (sessionsResult.status === 'fulfilled' && sessionsResult.value) {
+        const rawSessions = sessionsResult.value;
         realSessionCount = API.filterBotSessions(rawSessions).length;
-      } catch (e) {
-        console.warn('Sessions API unavailable:', e.message);
+      }
+
+      if (eventsResult.status === 'fulfilled' && eventsResult.value) {
+        const eventMetrics = eventsResult.value;
+        if (eventMetrics.length > 0) {
+          realEventNames = eventMetrics.map(e => e.x);
+          console.log(`%c[App] Discovered ${realEventNames.length} real events:`, 'color:#ffcc00', realEventNames);
+        }
       }
 
       const count = Math.max(12, realSessionCount || active || 5);
-      const sessions = API.generateDemoSessions(pages, count, startAt, endAt)
+      const sessions = API.generateDemoSessions(pages, count, startAt, endAt, realEventNames)
         .filter(s => !s.isBot);
 
       return { pages, active, stats, sessions, startAt, endAt };
@@ -513,7 +590,8 @@ async function buildWorld(range) {
   const data = await fetchData(range);
 
   setLoadingProgress(80, 'Placing buildings...');
-  world = new World(scene);
+  world = new World(scene, uiScene);
+  world.siteName = siteName || 'Portfolio';
   world.build(data.pages);
 
   setLoadingProgress(90, 'Starting timeline...');
@@ -538,7 +616,7 @@ async function buildWorld(range) {
   console.log(`  baseSpeed: ${timeline.baseSpeed.toFixed(0)}x (${PLAYBACK_DURATION_S}s playback)`);
   console.log(`  range: ${new Date(data.startAt).toISOString()} → ${new Date(data.endAt).toISOString()}`);
   console.log(`Rooms (${world.rooms.length}):`, world.rooms.map(r => `${r.name} [${r.nodeId}]`));
-  console.log(`Houses (${world.houses.length}):`, world.houses.map(h => `${h.name} (${h.rooms.length} rooms, door=${h.doorNodeId})`));
+  console.log(`Rides (${world.rides.length}):`, world.rides.map(r => `${r.name} (${r.type})`));
   console.log(`First 3 sessions:`);
   data.sessions.slice(0, 3).forEach((s, i) => {
     const pages = s.steps?.map(st => st.page) || ['<no steps>'];
@@ -551,6 +629,17 @@ async function buildWorld(range) {
 }
 
 // --- Date Filter ---
+
+function setupPanelCollapse() {
+  document.querySelectorAll('.close-btn[data-collapse]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const panelId = btn.dataset.collapse;
+      const panel = document.getElementById(panelId);
+      if (panel) panel.classList.toggle('panel-collapsed');
+    });
+  });
+}
 
 function setupDateFilter() {
   const buttons = document.querySelectorAll('.filter-btn[data-range]');
@@ -615,6 +704,7 @@ function updateTimeline(delta) {
 function updateSimulation(delta) {
   // Timeline drives spawning
   updateTimeline(delta);
+  updateCars(delta);
 
   // Update all characters
   for (let i = characters.length - 1; i >= 0; i--) {
@@ -622,7 +712,17 @@ function updateSimulation(delta) {
     char.update(delta);
 
     if (char.isDead) {
-      console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed (pos: ${char.group.position.x.toFixed(1)},${char.group.position.z.toFixed(1)}, leaving=${char.isLeaving})`, 'color:#ef9a9a');
+      // Disembark if still on a ride
+      if (char.isRiding && char.currentRide) {
+        char.currentRide.disembarkGuest(char);
+        char.isRiding = false;
+        char.currentRide = null;
+      }
+      // Spawn departure car if character was leaving (near parking lot)
+      if (char.isLeaving) {
+        spawnDepartureCar(char.group.position);
+      }
+      console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed`, 'color:#ef9a9a');
       addChatMessage(char.visitorName || 'Guest', 'left the park', '');
       if (world) {
         for (const room of world.rooms) {
@@ -635,25 +735,206 @@ function updateSimulation(delta) {
     }
   }
 
-  if (world && world.spawnSign) {
-    world.spawnSign.lookAt(camera.position);
+  // Update rides animation + decorations
+  if (world) {
+    for (const ride of world.rides) {
+      ride.update(delta);
+    }
+    world.updateDecorations(delta);
+    // Face all billboard signs toward camera
+    if (world.billboards) {
+      for (const sign of world.billboards) {
+        sign.lookAt(camera.position);
+      }
+    }
+  }
+}
+
+// --- Car system ---
+
+const CAR_COLORS = [0xd03020, 0x2060c0, 0x40c840, 0xf0c020, 0xe07020, 0x808080, 0xf0f0f0, 0x1a1a1a];
+
+function createCarMesh() {
+  const car = new THREE.Group();
+  const color = CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)];
+  const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
+  const darkMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a, flatShading: true });
+
+  // Body
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.7, 2.8), bodyMat);
+  body.position.y = 0.55;
+  body.castShadow = true;
+  car.add(body);
+
+  // Roof/cabin
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.55, 1.6), bodyMat);
+  roof.position.set(0, 1.15, -0.2);
+  roof.castShadow = true;
+  car.add(roof);
+
+  // Windshield
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(1.1, 0.4, 0.08),
+    new THREE.MeshLambertMaterial({ color: 0x88ccff, transparent: true, opacity: 0.6, flatShading: true })
+  );
+  glass.position.set(0, 1.1, 0.58);
+  car.add(glass);
+
+  // 4 wheels
+  for (const [wx, wz] of [[-0.7, 0.8], [0.7, 0.8], [-0.7, -0.8], [0.7, -0.8]]) {
+    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.12, 6), darkMat);
+    wheel.rotation.z = Math.PI / 2;
+    wheel.position.set(wx, 0.22, wz);
+    car.add(wheel);
+  }
+
+  // Headlights
+  for (const hx of [-0.5, 0.5]) {
+    const light = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.15, 0.05), new THREE.MeshBasicMaterial({ color: 0xffffcc }));
+    light.position.set(hx, 0.55, 1.42);
+    car.add(light);
+  }
+
+  return car;
+}
+
+function spawnArrivalCar(session) {
+  const car = createCarMesh();
+  const fromX = (Math.random() - 0.5) * 8;
+  const from = new THREE.Vector3(fromX, 0, 55);
+  const to = new THREE.Vector3(fromX * 0.3, 0, 20);
+  car.position.copy(from);
+  car.rotation.y = Math.PI; // face toward the park
+  scene.add(car);
+
+  activeCars.push({
+    group: car,
+    from, to,
+    t: 0,
+    speed: 0.6 + Math.random() * 0.2,
+    onComplete: () => {
+      scene.remove(car);
+      // Now spawn the character at parking lot
+      const spawnPos = to.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, 0, -1));
+      _spawnCharacterFromCar(session, spawnPos);
+    },
+  });
+}
+
+function spawnDepartureCar(position) {
+  const car = createCarMesh();
+  const from = new THREE.Vector3(position.x, 0, position.z);
+  const to = new THREE.Vector3(position.x + (Math.random() - 0.5) * 4, 0, 55);
+  car.position.copy(from);
+  car.rotation.y = 0; // face away from park
+  scene.add(car);
+
+  activeCars.push({
+    group: car,
+    from, to,
+    t: 0,
+    speed: 0.5 + Math.random() * 0.3,
+    onComplete: () => { scene.remove(car); },
+  });
+}
+
+function updateCars(delta) {
+  for (let i = activeCars.length - 1; i >= 0; i--) {
+    const car = activeCars[i];
+    car.t += delta * car.speed;
+    if (car.t >= 1) {
+      car.onComplete();
+      activeCars.splice(i, 1);
+    } else {
+      // Ease in/out
+      const ease = car.t < 0.5
+        ? 2 * car.t * car.t
+        : 1 - Math.pow(-2 * car.t + 2, 2) / 2;
+      car.group.position.lerpVectors(car.from, car.to, ease);
+    }
+  }
+}
+
+// --- Camera follow + arrow keys ---
+
+function startFollowing(char) {
+  followTarget = char;
+  addChatMessage('Camera', 'following', char.visitorName || 'Guest');
+}
+
+function stopFollowing() {
+  if (followTarget) {
+    addChatMessage('Camera', 'stopped following', followTarget.visitorName || 'Guest');
+  }
+  followTarget = null;
+}
+
+function updateCamera(delta) {
+  // Arrow key panning (isometric-aware: arrows move in screen space)
+  const panSpeed = 20 * delta;
+  // In isometric view, screen-right is roughly +X-Z, screen-up is roughly -X-Z+Y
+  // Simplified: map arrows to XZ movement
+  let dx = 0, dz = 0;
+  if (keysDown['ArrowLeft'])  dx -= panSpeed;
+  if (keysDown['ArrowRight']) dx += panSpeed;
+  if (keysDown['ArrowUp'])    dz -= panSpeed;
+  if (keysDown['ArrowDown'])  dz += panSpeed;
+
+  if (dx !== 0 || dz !== 0) {
+    // Stop following if user manually pans
+    if (followTarget) stopFollowing();
+    controls.target.x += dx;
+    controls.target.z += dz;
+    camera.position.x += dx;
+    camera.position.z += dz;
+  }
+
+  // Follow target character
+  if (followTarget) {
+    if (followTarget.isDead) {
+      stopFollowing();
+      return;
+    }
+    // Get world position (works even if reparented to a ride seat)
+    const worldPos = new THREE.Vector3();
+    followTarget.group.getWorldPosition(worldPos);
+
+    // Smoothly move camera target toward character
+    const lerpFactor = 1 - Math.pow(0.05, delta);
+    controls.target.lerp(worldPos, lerpFactor);
+
+    // Keep camera offset consistent
+    const isoDistance = 80;
+    camera.position.set(
+      controls.target.x + isoDistance,
+      controls.target.y + isoDistance * 0.8,
+      controls.target.z + isoDistance
+    );
   }
 }
 
 // --- Main ---
+const LOAD_START = performance.now();
+const MIN_LOAD_MS = 10000; // show box art for at least 10 seconds
+
 async function main() {
   setLoadingProgress(10, 'Initializing...');
   initScene();
   setupDateFilter();
   setupTimeline();
+  setupPanelCollapse();
 
   await buildWorld(currentRange);
 
-  setTimeout(hideLoadingScreen, 500);
+  // Enforce minimum loading time so you can admire the box art
+  const elapsed = performance.now() - LOAD_START;
+  const remaining = Math.max(0, MIN_LOAD_MS - elapsed);
+  setTimeout(hideLoadingScreen, remaining);
 
   renderer.setAnimationLoop(() => {
     const delta = Math.min(clock.getDelta(), 0.1);
 
+    updateCamera(delta);
     controls.update();
     updateSimulation(delta);
 
@@ -662,11 +943,16 @@ async function main() {
       world.updateMinimap(minimapCanvas, camera, characters);
     }
 
-    // Pixelated rendering: render scene to low-res target, then blit fullscreen
+    // Pass 1: pixelated scene at 1/3 resolution
     renderer.setRenderTarget(renderTarget);
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
     renderer.render(pixelScene, pixelCamera);
+
+    // Pass 2: crisp UI overlay (signs, chat bubbles) at full resolution
+    renderer.autoClear = false;
+    renderer.render(uiScene, camera);
+    renderer.autoClear = true;
   });
 }
 
