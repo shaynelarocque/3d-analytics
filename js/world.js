@@ -568,32 +568,8 @@ export class World {
   }
 
   createSky() {
-    // RCT2-style bright green-blue sky
-    const skyGeo = new THREE.SphereGeometry(95, 8, 8); // low poly for pixelated look
-    const skyMat = new THREE.MeshBasicMaterial({ color: 0x88c070, side: THREE.BackSide });
-    this.scene.add(new THREE.Mesh(skyGeo, skyMat));
-
-    // Chunky blocky clouds (RCT2 style)
-    for (let i = 0; i < 10; i++) {
-      const cloudGroup = new THREE.Group();
-      const cloudMat = new THREE.MeshBasicMaterial({ color: 0xf0f0e8, transparent: true, opacity: 0.85 });
-
-      // More boxy, fewer parts — chunky pixel clouds
-      for (let j = 0; j < 2 + Math.floor(Math.random() * 2); j++) {
-        const size = 3 + Math.random() * 4;
-        const part = new THREE.Mesh(new THREE.BoxGeometry(size, size * 0.3, size * 0.6), cloudMat);
-        part.position.set((Math.random() - 0.5) * 3, 0, (Math.random() - 0.5) * 1.5);
-        cloudGroup.add(part);
-      }
-
-      const angle = Math.random() * Math.PI * 2;
-      const radius = 35 + Math.random() * 45;
-      cloudGroup.position.set(Math.cos(angle) * radius, 22 + Math.random() * 12, Math.sin(angle) * radius);
-      cloudGroup.userData.cloudSpeed = 0.05 + Math.random() * 0.1;
-      cloudGroup.userData.cloudAngle = angle;
-      cloudGroup.userData.cloudRadius = radius;
-      this.scene.add(cloudGroup);
-    }
+    // No sky sphere or clouds needed — ortho camera uses clear color as sky.
+    // RCT2 has no visible sky geometry, just flat color background.
   }
 
   _drawPathSegment(from, to) {

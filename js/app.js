@@ -268,9 +268,7 @@ function initScene() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
-  controls.enableRotate = true; // allow rotation for iso views
-  controls.maxPolarAngle = Math.PI / 2.5;
-  controls.minPolarAngle = Math.PI / 6;
+  controls.enableRotate = false; // locked isometric — no rotation
   controls.minZoom = 0.3;
   controls.maxZoom = 3;
   controls.target.set(0, 0, -5);
@@ -636,15 +634,6 @@ function updateSimulation(delta) {
       characters.splice(i, 1);
     }
   }
-
-  // Animate clouds
-  scene.traverse(obj => {
-    if (obj.userData.cloudSpeed) {
-      obj.userData.cloudAngle += obj.userData.cloudSpeed * delta * 0.01;
-      obj.position.x = Math.cos(obj.userData.cloudAngle) * obj.userData.cloudRadius;
-      obj.position.z = Math.sin(obj.userData.cloudAngle) * obj.userData.cloudRadius;
-    }
-  });
 
   if (world && world.spawnSign) {
     world.spawnSign.lookAt(camera.position);
