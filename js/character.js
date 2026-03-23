@@ -275,7 +275,8 @@ export class Character {
       Math.sin(angle) * hSpeed
     );
     this.isFlying = true;
-    this.isLeaving = true; // so cleanup knows they were leaving
+    this.wasLaunched = true; // permanent flag — no car on death
+    this.isLeaving = true;
   }
 
   _pickWanderTarget() {

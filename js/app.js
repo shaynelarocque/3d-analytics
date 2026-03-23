@@ -725,7 +725,7 @@ function updateSimulation(delta) {
         char.currentRide = null;
       }
       // Spawn departure car if character walked out normally (not launched)
-      if (char.isLeaving && !char.isFlying) {
+      if (char.isLeaving && !char.wasLaunched) {
         spawnDepartureCar(char.group.position);
       }
       console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed`, 'color:#ef9a9a');
