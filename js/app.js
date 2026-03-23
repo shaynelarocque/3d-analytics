@@ -756,43 +756,71 @@ function updateSimulation(delta) {
   }
 }
 
-// --- Explosion system ---
-
-const EXPLOSION_COLORS = [0xff3030, 0xff8020, 0xffdd00, 0xff6600, 0xffaa00, 0xff0000, 0xffffff];
+// --- Explosion system (cartoonish nuclear poof) ---
 
 function spawnExplosion(pos) {
   const group = new THREE.Group();
   group.position.copy(pos);
+  group.position.y = 0.5;
 
-  const particles = [];
-  for (let i = 0; i < 20; i++) {
-    const color = EXPLOSION_COLORS[Math.floor(Math.random() * EXPLOSION_COLORS.length)];
-    const size = 0.15 + Math.random() * 0.3;
-    const particle = new THREE.Mesh(
-      new THREE.BoxGeometry(size, size, size),
-      new THREE.MeshLambertMaterial({ color, flatShading: true })
-    );
+  // Big fireball sphere (expands then fades)
+  const fireball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.3, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 1 })
+  );
+  group.add(fireball);
 
-    const angle = Math.random() * Math.PI * 2;
-    const upAngle = Math.random() * Math.PI * 0.5;
-    const speed = 3 + Math.random() * 6;
-    particle.userData.vel = new THREE.Vector3(
-      Math.cos(angle) * Math.cos(upAngle) * speed,
-      Math.sin(upAngle) * speed + 2,
-      Math.sin(angle) * Math.cos(upAngle) * speed
+  // Inner hot core
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.15, 6, 6),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 })
+  );
+  group.add(core);
+
+  // Expanding shockwave ring
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.2, 0.5, 16),
+    new THREE.MeshBasicMaterial({ color: 0xffdd00, transparent: true, opacity: 0.8, side: THREE.DoubleSide })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.1;
+  group.add(ring);
+
+  // Cartoon stars/sparkles radiating outward
+  const stars = [];
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    const star = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 0.2, 0.2),
+      new THREE.MeshBasicMaterial({ color: i % 2 === 0 ? 0xffdd00 : 0xffffff, transparent: true, opacity: 1 })
     );
-    particle.userData.rotSpeed = new THREE.Vector3(
-      (Math.random() - 0.5) * 12,
-      (Math.random() - 0.5) * 12,
-      (Math.random() - 0.5) * 12
+    star.rotation.set(Math.PI / 4, 0, Math.PI / 4); // diamond shape
+    star.userData.angle = angle;
+    star.userData.speed = 4 + Math.random() * 3;
+    star.position.set(Math.cos(angle) * 0.5, 0.5 + Math.random() * 0.5, Math.sin(angle) * 0.5);
+    group.add(star);
+    stars.push(star);
+  }
+
+  // Rising mushroom puff (stack of spheres going up)
+  const puffs = [];
+  for (let i = 0; i < 4; i++) {
+    const puff = new THREE.Mesh(
+      new THREE.SphereGeometry(0.4 - i * 0.06, 6, 6),
+      new THREE.MeshLambertMaterial({
+        color: i < 2 ? 0xff6600 : 0xcccccc,
+        transparent: true, opacity: 0.9, flatShading: true
+      })
     );
-    particle.castShadow = true;
-    group.add(particle);
-    particles.push(particle);
+    puff.position.y = 0.5 + i * 0.3;
+    puff.userData.riseSpeed = 2 + i * 0.8;
+    puff.userData.baseScale = 1;
+    group.add(puff);
+    puffs.push(puff);
   }
 
   scene.add(group);
-  explosions.push({ group, particles, life: 3 });
+  explosions.push({ group, fireball, core, ring, stars, puffs, life: 2.5, maxLife: 2.5 });
 }
 
 function updateExplosions(delta) {
@@ -806,28 +834,41 @@ function updateExplosions(delta) {
       continue;
     }
 
-    const fade = Math.max(0, exp.life / 3);
-    for (const p of exp.particles) {
-      // Gravity
-      p.userData.vel.y -= 12 * delta;
-      p.position.add(p.userData.vel.clone().multiplyScalar(delta));
+    const t = 1 - exp.life / exp.maxLife; // 0→1 over lifetime
+    const fade = Math.max(0, exp.life / exp.maxLife);
 
-      // Bounce off ground
-      if (p.position.y + exp.group.position.y < 0.1) {
-        p.position.y = 0.1 - exp.group.position.y;
-        p.userData.vel.y = Math.abs(p.userData.vel.y) * 0.4;
-        p.userData.vel.x *= 0.7;
-        p.userData.vel.z *= 0.7;
-      }
+    // Fireball: expand quickly then shrink
+    const fbScale = t < 0.2 ? t / 0.2 * 4 : Math.max(0, 4 * (1 - t));
+    exp.fireball.scale.setScalar(fbScale);
+    exp.fireball.material.opacity = Math.max(0, 1 - t * 1.5);
 
-      // Tumble
-      p.rotation.x += p.userData.rotSpeed.x * delta;
-      p.rotation.y += p.userData.rotSpeed.y * delta;
-      p.rotation.z += p.userData.rotSpeed.z * delta;
+    // Core: bright flash then gone
+    exp.core.scale.setScalar(fbScale * 0.8);
+    exp.core.material.opacity = Math.max(0, 1 - t * 2);
 
-      // Fade out
-      p.material.opacity = fade;
-      p.material.transparent = true;
+    // Shockwave ring: expand outward, flatten and fade
+    const ringScale = 1 + t * 8;
+    exp.ring.scale.setScalar(ringScale);
+    exp.ring.material.opacity = Math.max(0, 0.8 - t * 1.2);
+
+    // Stars: fly outward and shrink
+    for (const star of exp.stars) {
+      const r = t * star.userData.speed;
+      star.position.x = Math.cos(star.userData.angle) * r;
+      star.position.z = Math.sin(star.userData.angle) * r;
+      star.position.y = 0.5 + Math.sin(t * Math.PI) * 2; // arc up then down
+      star.rotation.y += delta * 8;
+      const starScale = Math.max(0, 1 - t * 1.3);
+      star.scale.setScalar(starScale);
+      star.material.opacity = starScale;
+    }
+
+    // Mushroom puffs: rise and expand, then fade
+    for (const puff of exp.puffs) {
+      puff.position.y += puff.userData.riseSpeed * delta;
+      const puffExpand = 1 + t * 2;
+      puff.scale.setScalar(puffExpand);
+      puff.material.opacity = Math.max(0, 0.9 - t * 1.2);
     }
   }
 }
