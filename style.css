@@ -331,8 +331,8 @@ body {
   position: absolute;
   bottom: 4px;
   left: 4px;
-  width: 300px;
-  max-height: 180px;
+  width: 380px;
+  max-height: 260px;
   background: #c6b790;
   border: 2px solid;
   border-color: #e8dcc0 #6b5e3e #6b5e3e #e8dcc0;
@@ -344,7 +344,7 @@ body {
 
 #chat-messages {
   padding: 4px 6px;
-  max-height: 140px;
+  max-height: 220px;
   overflow-y: auto;
   background: #a89870;
   margin: 2px 4px 4px;

@@ -361,29 +361,29 @@ export class Character {
     }
 
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 64;
+    canvas.width = 512;
+    canvas.height = 128;
     const ctx = canvas.getContext('2d');
 
     // RCT2-style thought bubble: beveled panel
     ctx.fillStyle = '#c6b790';
-    ctx.fillRect(8, 8, 240, 40);
+    ctx.fillRect(8, 8, 496, 112);
     // Raised bevel
     ctx.strokeStyle = '#e8dcc0';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(8, 48); ctx.lineTo(8, 8); ctx.lineTo(248, 8);
+    ctx.moveTo(8, 120); ctx.lineTo(8, 8); ctx.lineTo(504, 8);
     ctx.stroke();
     ctx.strokeStyle = '#6b5e3e';
     ctx.beginPath();
-    ctx.moveTo(248, 8); ctx.lineTo(248, 48); ctx.lineTo(8, 48);
+    ctx.moveTo(504, 8); ctx.lineTo(504, 120); ctx.lineTo(8, 120);
     ctx.stroke();
 
     ctx.fillStyle = '#1a1a1a';
-    ctx.font = 'bold 14px monospace';
+    ctx.font = 'bold 32px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(text, 128, 28, 230);
+    ctx.fillText(text, 256, 64, 480);
 
     const texture = new THREE.CanvasTexture(canvas);
     texture.minFilter = THREE.NearestFilter;
@@ -393,8 +393,8 @@ export class Character {
       map: texture, transparent: true, depthTest: false,
     });
     this.chatBubble = new THREE.Sprite(spriteMat);
-    this.chatBubble.position.y = 2.3;
-    this.chatBubble.scale.set(2, 0.5, 1);
+    this.chatBubble.position.y = 2.8;
+    this.chatBubble.scale.set(3.5, 0.9, 1);
     this.group.add(this.chatBubble);
 
     this.chatTimer = 4;

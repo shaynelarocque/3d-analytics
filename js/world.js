@@ -340,13 +340,13 @@ export class World {
     this._addWall(g, 0.12, DOOR_H, WALL_THICK + 0.05, DOOR_W / 2, DOOR_H / 2, frontZ, stoneDkMat);
     this._addWall(g, DOOR_W + 0.24, 0.12, WALL_THICK + 0.05, 0, DOOR_H, frontZ, stoneDkMat);
 
-    // House name sign above door
-    const signTex = createTextTexture(house.name, { fontSize: 22, width: 256, height: 48 });
+    // House name sign above door — large so it's legible through pixel filter
+    const signTex = createTextTexture(house.name, { fontSize: 36, width: 512, height: 96 });
     const signMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.5, 0.5),
+      new THREE.PlaneGeometry(4, 0.8),
       new THREE.MeshBasicMaterial({ map: signTex, transparent: true })
     );
-    signMesh.position.set(0, DOOR_H + 0.5, frontZ + 0.2);
+    signMesh.position.set(0, DOOR_H + 0.6, frontZ + 0.2);
     g.add(signMesh);
 
     // Door path node (just outside the door) — connected to street in layoutHouses()
@@ -433,23 +433,23 @@ export class World {
         house.rooms.push(room);
         this.rooms.push(room);
 
-        // Room label on back wall
+        // Room label on back wall — oversized for pixel filter legibility
         const labelTex = createTextTexture(this._shortName(house.pages[i].x), {
-          fontSize: 14, width: 192, height: 32, fontColor: '#2e7d32',
+          fontSize: 28, width: 384, height: 64, fontColor: '#2e7d32',
         });
         const label = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.8, 0.35),
+          new THREE.PlaneGeometry(3.2, 0.55),
           new THREE.MeshBasicMaterial({ map: labelTex, transparent: true })
         );
-        label.position.set(cx, WALL_H - 0.5, -halfD + WALL_THICK + 0.05);
+        label.position.set(cx, WALL_H - 0.4, -halfD + WALL_THICK + 0.05);
         g.add(label);
 
         // Visitor count
         const countTex = createTextTexture(`${house.pages[i].y} visits`, {
-          fontSize: 12, fontColor: '#1a1a1a', width: 128, height: 24,
+          fontSize: 24, fontColor: '#1a1a1a', width: 256, height: 48,
         });
         const countLabel = new THREE.Mesh(
-          new THREE.PlaneGeometry(1.2, 0.25),
+          new THREE.PlaneGeometry(2.2, 0.45),
           new THREE.MeshBasicMaterial({ map: countTex, transparent: true })
         );
         countLabel.position.set(cx, WALL_H - 1, -halfD + WALL_THICK + 0.05);
@@ -478,23 +478,23 @@ export class World {
       house.rooms.push(room);
       this.rooms.push(room);
 
-      // Room label
+      // Room label — oversized for pixel filter legibility
       const labelTex = createTextTexture(this._shortName(house.pages[0].x), {
-        fontSize: 14, width: 192, height: 32, fontColor: '#2e7d32',
+        fontSize: 28, width: 384, height: 64, fontColor: '#2e7d32',
       });
       const label = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.8, 0.35),
+        new THREE.PlaneGeometry(3.2, 0.55),
         new THREE.MeshBasicMaterial({ map: labelTex, transparent: true })
       );
-      label.position.set(0, WALL_H - 0.5, -halfD + WALL_THICK + 0.05);
+      label.position.set(0, WALL_H - 0.4, -halfD + WALL_THICK + 0.05);
       g.add(label);
 
       // Count
       const countTex = createTextTexture(`${house.pages[0].y} visits`, {
-        fontSize: 12, fontColor: '#1a1a1a', width: 128, height: 24,
+        fontSize: 24, fontColor: '#1a1a1a', width: 256, height: 48,
       });
       const countLabel = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.2, 0.25),
+        new THREE.PlaneGeometry(2.2, 0.45),
         new THREE.MeshBasicMaterial({ map: countTex, transparent: true })
       );
       countLabel.position.set(0, WALL_H - 1, -halfD + WALL_THICK + 0.05);
