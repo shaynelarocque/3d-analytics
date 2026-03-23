@@ -18,6 +18,7 @@ let isBuilding = false; // lock to prevent double-loading
 let followTarget = null; // character to follow with camera
 let keysDown = {};       // arrow key state
 let activeCars = [];     // animated cars driving in/out
+let explosions = [];     // active explosion particle groups
 
 const SPAWN_POS = new THREE.Vector3(0, 0, 8);
 
@@ -427,6 +428,10 @@ function _spawnCharacterFromCar(session, spawnPos) {
   }
 
   char.uiScene = uiScene;
+  char.onExplode = (c, pos) => {
+    spawnExplosion(pos);
+    addChatMessage(c.visitorName || 'Guest', 'flew off a ride and', 'EXPLODED!', 'event-click');
+  };
   char.setJourney(session, world.pathGraph, world);
 
   if (session.steps.length > 0) {
@@ -448,11 +453,11 @@ function _spawnCharacterFromCar(session, spawnPos) {
 }
 
 function clearAllCharacters() {
-  // Remove any active cars
-  for (const car of activeCars) {
-    scene.remove(car.group);
-  }
+  // Remove any active cars and explosions
+  for (const car of activeCars) scene.remove(car.group);
   activeCars = [];
+  for (const exp of explosions) scene.remove(exp.group);
+  explosions = [];
 
   for (const char of characters) {
     // If character is riding, disembark first
@@ -705,6 +710,7 @@ function updateSimulation(delta) {
   // Timeline drives spawning
   updateTimeline(delta);
   updateCars(delta);
+  updateExplosions(delta);
 
   // Update all characters
   for (let i = characters.length - 1; i >= 0; i--) {
@@ -718,8 +724,8 @@ function updateSimulation(delta) {
         char.isRiding = false;
         char.currentRide = null;
       }
-      // Spawn departure car if character was leaving (near parking lot)
-      if (char.isLeaving) {
+      // Spawn departure car if character walked out normally (not launched)
+      if (char.isLeaving && !char.isFlying) {
         spawnDepartureCar(char.group.position);
       }
       console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed`, 'color:#ef9a9a');
@@ -746,6 +752,82 @@ function updateSimulation(delta) {
       for (const sign of world.billboards) {
         sign.lookAt(camera.position);
       }
+    }
+  }
+}
+
+// --- Explosion system ---
+
+const EXPLOSION_COLORS = [0xff3030, 0xff8020, 0xffdd00, 0xff6600, 0xffaa00, 0xff0000, 0xffffff];
+
+function spawnExplosion(pos) {
+  const group = new THREE.Group();
+  group.position.copy(pos);
+
+  const particles = [];
+  for (let i = 0; i < 20; i++) {
+    const color = EXPLOSION_COLORS[Math.floor(Math.random() * EXPLOSION_COLORS.length)];
+    const size = 0.15 + Math.random() * 0.3;
+    const particle = new THREE.Mesh(
+      new THREE.BoxGeometry(size, size, size),
+      new THREE.MeshLambertMaterial({ color, flatShading: true })
+    );
+
+    const angle = Math.random() * Math.PI * 2;
+    const upAngle = Math.random() * Math.PI * 0.5;
+    const speed = 3 + Math.random() * 6;
+    particle.userData.vel = new THREE.Vector3(
+      Math.cos(angle) * Math.cos(upAngle) * speed,
+      Math.sin(upAngle) * speed + 2,
+      Math.sin(angle) * Math.cos(upAngle) * speed
+    );
+    particle.userData.rotSpeed = new THREE.Vector3(
+      (Math.random() - 0.5) * 12,
+      (Math.random() - 0.5) * 12,
+      (Math.random() - 0.5) * 12
+    );
+    particle.castShadow = true;
+    group.add(particle);
+    particles.push(particle);
+  }
+
+  scene.add(group);
+  explosions.push({ group, particles, life: 3 });
+}
+
+function updateExplosions(delta) {
+  for (let i = explosions.length - 1; i >= 0; i--) {
+    const exp = explosions[i];
+    exp.life -= delta;
+
+    if (exp.life <= 0) {
+      scene.remove(exp.group);
+      explosions.splice(i, 1);
+      continue;
+    }
+
+    const fade = Math.max(0, exp.life / 3);
+    for (const p of exp.particles) {
+      // Gravity
+      p.userData.vel.y -= 12 * delta;
+      p.position.add(p.userData.vel.clone().multiplyScalar(delta));
+
+      // Bounce off ground
+      if (p.position.y + exp.group.position.y < 0.1) {
+        p.position.y = 0.1 - exp.group.position.y;
+        p.userData.vel.y = Math.abs(p.userData.vel.y) * 0.4;
+        p.userData.vel.x *= 0.7;
+        p.userData.vel.z *= 0.7;
+      }
+
+      // Tumble
+      p.rotation.x += p.userData.rotSpeed.x * delta;
+      p.rotation.y += p.userData.rotSpeed.y * delta;
+      p.rotation.z += p.userData.rotSpeed.z * delta;
+
+      // Fade out
+      p.material.opacity = fade;
+      p.material.transparent = true;
     }
   }
 }

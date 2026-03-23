@@ -75,9 +75,14 @@ export class Character {
     this.isDead = false;
     this.isRiding = false;
     this.currentRide = null;
+    this.isFlying = false;       // launched off a ride
+    this.flyVelocity = null;     // THREE.Vector3
     this.animTime = Math.random() * Math.PI * 2;
     this.chatBubble = null;
     this.chatTimer = 0;
+
+    // Callbacks set by app
+    this.onExplode = null;       // (character, worldPos) => spawn particles
 
     // References (set by app)
     this.pathGraph = null;
@@ -248,6 +253,31 @@ export class Character {
     }
   }
 
+  _launchFromRide() {
+    // Get world position while still on the ride
+    const worldPos = new THREE.Vector3();
+    this.group.getWorldPosition(worldPos);
+
+    // Detach from ride
+    this.currentRide.disembarkGuest(this);
+    this.isRiding = false;
+    this.currentRide = null;
+
+    // Place at the world position we captured
+    this.group.position.copy(worldPos);
+
+    // Launch velocity: random horizontal direction + strong upward
+    const angle = Math.random() * Math.PI * 2;
+    const hSpeed = 8 + Math.random() * 10;
+    this.flyVelocity = new THREE.Vector3(
+      Math.cos(angle) * hSpeed,
+      12 + Math.random() * 8,   // strong upward launch
+      Math.sin(angle) * hSpeed
+    );
+    this.isFlying = true;
+    this.isLeaving = true; // so cleanup knows they were leaving
+  }
+
   _pickWanderTarget() {
     if (!this.roomBounds) return null;
     const b = this.roomBounds;
@@ -307,12 +337,39 @@ export class Character {
     if (this.isRiding) {
       this.idleTimer -= delta;
       if (this.idleTimer <= 0) {
-        // Disembark
-        this.currentRide.disembarkGuest(this);
-        this.isRiding = false;
-        this.currentRide = null;
-        this.journeyStepIndex++;
-        this._startNextStep();
+        const isLastStep = this.journeyStepIndex >= (this.journey?.steps?.length || 0) - 1;
+        const launchChance = isLastStep ? 0.35 : 0; // 35% chance on final ride
+
+        if (launchChance > 0 && Math.random() < launchChance) {
+          // FLY OFF THE RIDE!
+          this._launchFromRide();
+        } else {
+          // Normal disembark
+          this.currentRide.disembarkGuest(this);
+          this.isRiding = false;
+          this.currentRide = null;
+          this.journeyStepIndex++;
+          this._startNextStep();
+        }
+      }
+    }
+
+    // Flying through the air after launch
+    if (this.isFlying && this.flyVelocity) {
+      this.flyVelocity.y -= 15 * delta; // gravity
+      this.group.position.add(this.flyVelocity.clone().multiplyScalar(delta));
+      // Tumble wildly
+      this.group.rotation.x += delta * 8;
+      this.group.rotation.z += delta * 6;
+
+      // Hit the ground
+      if (this.group.position.y <= 0) {
+        this.group.position.y = 0;
+        this.isFlying = false;
+        if (this.onExplode) {
+          this.onExplode(this, this.group.position.clone());
+        }
+        this.isDead = true;
       }
     }
 
