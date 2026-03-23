@@ -236,15 +236,15 @@ function setupPixelation() {
 // --- Three.js Setup ---
 function initScene() {
   scene = new THREE.Scene();
-  scene.fog = new THREE.Fog(0x88c070, 60, 120); // RCT2 green-tinted fog
+  // No fog — RCT2 is crisp edge-to-edge
 
   // Isometric orthographic camera (RCT2-style dimetric)
   const aspect = window.innerWidth / window.innerHeight;
-  const frustum = 28; // zoom level
+  const frustum = 18; // tighter zoom to see buildings clearly
   camera = new THREE.OrthographicCamera(
     -frustum * aspect, frustum * aspect,
     frustum, -frustum,
-    0.1, 300
+    0.1, 400
   );
   // Classic isometric angle: ~35.264° elevation, 45° azimuth
   const isoDistance = 80;
@@ -297,7 +297,7 @@ function initScene() {
 
   window.addEventListener('resize', () => {
     const a = window.innerWidth / window.innerHeight;
-    const f = 28;
+    const f = 18;
     camera.left = -f * a;
     camera.right = f * a;
     camera.top = f;
