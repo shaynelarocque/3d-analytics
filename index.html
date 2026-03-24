@@ -23,12 +23,7 @@
     <!-- Top bar -->
     <div id="top-bar">
       <div id="site-name">Loading...</div>
-      <div id="date-filter">
-        <button class="filter-btn" data-range="24h">24h</button>
-        <button class="filter-btn" data-range="7d">7d</button>
-        <button class="filter-btn" data-range="30d">30d</button>
-        <button class="filter-btn active" data-range="90d">90d</button>
-      </div>
+      <button id="rebuild-btn" class="filter-btn">Rebuild Map</button>
       <div id="active-count">
         <span class="pulse-dot"></span>
         <span id="active-num">0</span> online
@@ -82,7 +77,7 @@
     </div>
 
     <!-- Chat / activity log -->
-    <div id="chat-log">
+    <div id="chat-log" class="panel-collapsed">
       <div class="panel-title">Activity <button class="close-btn" data-collapse="chat-log">&times;</button></div>
       <div id="chat-messages"></div>
     </div>

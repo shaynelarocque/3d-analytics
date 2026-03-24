@@ -12,15 +12,27 @@ let world;
 let characters = [];
 let websiteId = null;
 let isDemo = false;
-let currentRange = '90d';
 let siteName = '';
 let isBuilding = false; // lock to prevent double-loading
 let followTarget = null; // character to follow with camera
 let keysDown = {};       // arrow key state
-let activeCars = [];     // animated cars driving in/out
+// Monorail — elevated loop with 4 stations at S/E/N/W
+const STATION_T = [0.0, 0.25, 0.5, 0.75];
+const STATION_NAMES = ['south', 'east', 'north', 'west'];
+const train = {
+  mesh: null,
+  t: 0.05,               // start slightly past south station
+  speed: 0.019,           // ~52s per loop (2x pedestrian speed)
+  pendingSessions: [],
+  capacity: 6,
+  atStation: false,
+  currentStationIdx: -1,
+  unloadTimer: 0,
+  lastStopTime: [0, 0, 0, 0], // per-station cooldown timestamps
+};
 let explosions = [];     // active explosion particle groups
 
-const SPAWN_POS = new THREE.Vector3(0, 0, 8);
+const SPAWN_POS = new THREE.Vector3(0, 0, -49); // South station staircase base
 
 // Timeline state
 let timeline = {
@@ -257,12 +269,12 @@ function initScene() {
   camera = new THREE.OrthographicCamera(
     -frustum * aspect, frustum * aspect,
     frustum, -frustum,
-    0.1, 400
+    0.1, 1000
   );
   // Classic isometric angle: ~35.264° elevation, 45° azimuth
   const isoDistance = 80;
   camera.position.set(isoDistance, isoDistance * 0.8, isoDistance);
-  camera.lookAt(0, 0, -5);
+  camera.lookAt(0, 0, 0);
 
   renderer = new THREE.WebGLRenderer({
     canvas: document.getElementById('viewport'),
@@ -282,9 +294,9 @@ function initScene() {
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.enableRotate = false; // locked isometric — no rotation
-  controls.minZoom = 0.3;
+  controls.minZoom = 0.12;  // zoom out enough to see entire map
   controls.maxZoom = 3;
-  controls.target.set(0, 0, -5);
+  controls.target.set(0, 0, 0);
   controls.enablePan = true;
   controls.panSpeed = 1.5;
   // Left-click pans (since rotation is disabled)
@@ -374,8 +386,14 @@ function initScene() {
 // --- Character / Journey Management ---
 
 function spawnVisitorWithJourney(session) {
-  // Spawn a car that drives in — character appears when car arrives
-  spawnArrivalCar(session);
+  // Spawn at south hub — derive position from plan if available
+  const basePos = (world?.plan?.hubPositions)
+    ? (() => { const h = world.plan.hubPositions.south; const w = world.plan.grid.tileToWorld(h.col, h.row); return new THREE.Vector3(w.x, 0, w.z); })()
+    : SPAWN_POS.clone();
+  const spawnPos = basePos.add(
+    new THREE.Vector3((Math.random() - 0.5) * 6, 0, (Math.random() - 0.5) * 3)
+  );
+  _spawnCharacterFromCar(session, spawnPos);
   return null;
 }
 
@@ -392,12 +410,12 @@ function _spawnCharacterFromCar(session, spawnPos) {
     addChatMessage(name, rideVerb, shortPage);
     c.showChatBubble(shortPage);
 
-    // Schedule events during the idle/wander period (after arrival)
+    // Schedule events — only fire if character is actually on the ride (not queuing)
     if (step.events && step.events.length > 0) {
       step.events.forEach(evt => {
         const delayMs = evt.at * step.duration * 1000;
         setTimeout(() => {
-          if (c.isDead) return;
+          if (c.isDead || c.isQueueing) return; // skip events while waiting in line
           const info = eventDisplayInfo(evt.name);
           addChatMessage(name, info.verb, info.label, info.cls);
           c.showChatBubble(evt.name.replace('_', ' '));
@@ -454,8 +472,15 @@ function _spawnCharacterFromCar(session, spawnPos) {
 
 function clearAllCharacters() {
   // Remove any active cars and explosions
-  for (const car of activeCars) scene.remove(car.group);
-  activeCars = [];
+  // Clean train state
+  if (train.cars) { train.cars.forEach(c => scene.remove(c)); train.cars = null; }
+  train.mesh = null;
+  train.pendingSessions = [];
+  train.t = 0.05;
+  train.atStation = false;
+  train.currentStationIdx = -1;
+  train.unloadTimer = 0;
+  train.lastStopTime = [0, 0, 0, 0];
   for (const exp of explosions) scene.remove(exp.group);
   explosions = [];
 
@@ -485,8 +510,8 @@ function clearAllCharacters() {
 
 // --- Data Fetching ---
 
-async function fetchData(range) {
-  const { startAt, endAt } = API.getDateRange(range);
+async function fetchData() {
+  const { startAt, endAt } = API.getDateRange();
 
   try {
     setLoadingProgress(20, 'Connecting to Umami...');
@@ -504,7 +529,7 @@ async function fetchData(range) {
     const [active, stats, pages] = await Promise.all([
       API.getActiveVisitors(websiteId),
       API.getStats(websiteId, startAt, endAt),
-      API.getMetrics(websiteId, 'url', startAt, endAt, 20),
+      API.getMetrics(websiteId, 'url', startAt, endAt, 500),
     ]);
 
     updateActiveCount(active);
@@ -535,7 +560,11 @@ async function fetchData(range) {
         }
       }
 
-      const count = Math.max(12, realSessionCount || active || 5);
+      // Scale session count to reflect real traffic — at least total pageviews / 3
+      // (each session visits ~3 pages on average), capped to keep performance reasonable
+      const totalPageviews = pages.reduce((sum, p) => sum + p.y, 0);
+      const proportionalCount = Math.ceil(totalPageviews / 3);
+      const count = Math.min(200, Math.max(20, proportionalCount, realSessionCount || active || 5));
       const sessions = API.generateDemoSessions(pages, count, startAt, endAt, realEventNames)
         .filter(s => !s.isBot);
 
@@ -547,14 +576,16 @@ async function fetchData(range) {
     console.warn('Using demo data:', err.message);
     isDemo = true;
 
-    const { startAt, endAt } = API.getDateRange(range);
+    const { startAt, endAt } = API.getDateRange();
     const demo = API.getDemoData();
     siteName = demo.website.name + ' (Demo)';
     document.getElementById('site-name').textContent = siteName;
     updateActiveCount(demo.active);
     updateStats(demo.stats);
 
-    const sessions = API.generateDemoSessions(demo.pages, 15, startAt, endAt)
+    const demoTotal = demo.pages.reduce((sum, p) => sum + p.y, 0);
+    const demoCount = Math.min(200, Math.max(20, Math.ceil(demoTotal / 3)));
+    const sessions = API.generateDemoSessions(demo.pages, demoCount, startAt, endAt)
       .filter(s => !s.isBot);
 
     setLoadingProgress(70, 'Building demo world...');
@@ -585,19 +616,30 @@ function clearWorld() {
   world = null;
 }
 
-async function buildWorld(range) {
+async function buildWorld() {
   if (isBuilding) return;
   isBuilding = true;
 
   clearAllCharacters();
   clearWorld();
 
-  const data = await fetchData(range);
+  const data = await fetchData();
 
   setLoadingProgress(80, 'Placing buildings...');
   world = new World(scene, uiScene);
-  world.siteName = siteName || 'Portfolio';
+  world.siteName = siteName || 'PAT2';
   world.build(data.pages);
+  initTrain();
+
+  // Zoom out to show entire map during loading
+  if (camera && world.plan) {
+    const mapRadius = world.plan.gridSize; // world units (gridSize * tileSize / 2 ≈ gridSize)
+    camera.zoom = Math.min(0.5, 18 / mapRadius);
+    camera.updateProjectionMatrix();
+  }
+
+  // Assembly animation: rides drop in from the sky
+  startAssemblyAnimation();
 
   setLoadingProgress(90, 'Starting timeline...');
 
@@ -616,7 +658,7 @@ async function buildWorld(range) {
 
   initTimelineUI();
 
-  console.group(`%c[App] buildWorld("${range}") complete`, 'color:#ffcc00; font-weight:bold');
+  console.group(`%c[App] buildWorld complete`, 'color:#ffcc00; font-weight:bold');
   console.log(`Timeline: ${data.sessions.length} sessions queued`);
   console.log(`  baseSpeed: ${timeline.baseSpeed.toFixed(0)}x (${PLAYBACK_DURATION_S}s playback)`);
   console.log(`  range: ${new Date(data.startAt).toISOString()} → ${new Date(data.endAt).toISOString()}`);
@@ -646,26 +688,14 @@ function setupPanelCollapse() {
   });
 }
 
-function setupDateFilter() {
-  const buttons = document.querySelectorAll('.filter-btn[data-range]');
-  buttons.forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const range = btn.dataset.range;
-      if (range === currentRange || isBuilding) {
-        console.log(`%c[Filter] Ignored click: range=${range}, current=${currentRange}, building=${isBuilding}`, 'color:#888');
-        return;
-      }
-
-      console.log(`%c[Filter] Switching range: ${currentRange} → ${range}`, 'color:#ffcc00');
-      currentRange = range;
-      buttons.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-
-      document.getElementById('chat-messages').innerHTML = '';
-      addChatMessage('System', 'reloading', `${range} data...`);
-
-      await buildWorld(range);
-    });
+function setupRebuildButton() {
+  const btn = document.getElementById('rebuild-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (isBuilding) return;
+    document.getElementById('chat-messages').innerHTML = '';
+    addChatMessage('System', 'rebuilding', 'map...');
+    await buildWorld();
   });
 }
 
@@ -709,7 +739,8 @@ function updateTimeline(delta) {
 function updateSimulation(delta) {
   // Timeline drives spawning
   updateTimeline(delta);
-  updateCars(delta);
+  updateTrain(delta);
+  updateAssembly(delta);
   updateExplosions(delta);
 
   // Update all characters
@@ -724,10 +755,7 @@ function updateSimulation(delta) {
         char.isRiding = false;
         char.currentRide = null;
       }
-      // Spawn departure car if character walked out normally (not launched)
-      if (char.isLeaving && !char.wasLaunched) {
-        spawnDepartureCar(char.group.position);
-      }
+      // Character walked out — no departure car needed (train system)
       console.log(`%c[Sim] ${char.visitorName || 'Visitor'} removed`, 'color:#ef9a9a');
       addChatMessage(char.visitorName || 'Guest', 'left the park', '');
       if (world) {
@@ -877,103 +905,194 @@ function updateExplosions(delta) {
 
 const CAR_COLORS = [0xd03020, 0x2060c0, 0x40c840, 0xf0c020, 0xe07020, 0x808080, 0xf0f0f0, 0x1a1a1a];
 
-function createCarMesh() {
-  const car = new THREE.Group();
-  const color = CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)];
-  const bodyMat = new THREE.MeshLambertMaterial({ color, flatShading: true });
-  const darkMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a, flatShading: true });
+// ── Train system ─────────────────────────────────────────────────────────
 
-  // Body
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.7, 2.8), bodyMat);
-  body.position.y = 0.55;
-  body.castShadow = true;
-  car.add(body);
+function createTrainCars() {
+  const blackMat = new THREE.MeshLambertMaterial({ color: 0x1a1a1a, flatShading: true });
+  const metalMat = new THREE.MeshLambertMaterial({ color: 0x808890, flatShading: true });
+  const cars = [];
 
-  // Roof/cabin
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.55, 1.6), bodyMat);
-  roof.position.set(0, 1.15, -0.2);
-  roof.castShadow = true;
-  car.add(roof);
-
-  // Windshield
-  const glass = new THREE.Mesh(
-    new THREE.BoxGeometry(1.1, 0.4, 0.08),
-    new THREE.MeshLambertMaterial({ color: 0x88ccff, transparent: true, opacity: 0.6, flatShading: true })
-  );
-  glass.position.set(0, 1.1, 0.58);
-  car.add(glass);
-
-  // 4 wheels
+  // Locomotive
+  const loco = new THREE.Group();
+  const redMat = new THREE.MeshLambertMaterial({ color: 0xd03020, flatShading: true });
+  const locoBody = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 3), redMat);
+  locoBody.position.y = 0.8; locoBody.castShadow = true;
+  loco.add(locoBody);
+  const chimney = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.25, 0.8, 6), blackMat);
+  chimney.position.set(0, 1.8, 0.8);
+  loco.add(chimney);
+  const cowcatcher = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.3, 0.4), new THREE.MeshLambertMaterial({ color: 0xf0c020, flatShading: true }));
+  cowcatcher.position.set(0, 0.3, 1.7);
+  loco.add(cowcatcher);
+  const cabRoof = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.15, 1.2), redMat);
+  cabRoof.position.set(0, 1.6, -0.9);
+  loco.add(cabRoof);
   for (const [wx, wz] of [[-0.7, 0.8], [0.7, 0.8], [-0.7, -0.8], [0.7, -0.8]]) {
-    const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.12, 6), darkMat);
-    wheel.rotation.z = Math.PI / 2;
-    wheel.position.set(wx, 0.22, wz);
-    car.add(wheel);
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.12, 8), blackMat);
+    w.rotation.z = Math.PI / 2; w.position.set(wx, 0.3, wz); loco.add(w);
+  }
+  cars.push(loco);
+
+  // 2 carriages
+  const carriageColors = [0x2060c0, 0x30a030];
+  for (const color of carriageColors) {
+    const car = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.8, 2.5), new THREE.MeshLambertMaterial({ color, flatShading: true }));
+    body.position.y = 0.7; body.castShadow = true; car.add(body);
+    const conn = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.6), metalMat);
+    conn.position.set(0, 0.5, 1.5); car.add(conn);
+    for (const [wx, wz] of [[-0.6, 0.6], [0.6, 0.6], [-0.6, -0.6], [0.6, -0.6]]) {
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.1, 6), blackMat);
+      w.rotation.z = Math.PI / 2; w.position.set(wx, 0.22, wz); car.add(w);
+    }
+    cars.push(car);
   }
 
-  // Headlights
-  for (const hx of [-0.5, 0.5]) {
-    const light = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.15, 0.05), new THREE.MeshBasicMaterial({ color: 0xffffcc }));
-    light.position.set(hx, 0.55, 1.42);
-    car.add(light);
+  return cars;
+}
+
+function initTrain() {
+  // Remove old cars
+  if (train.cars) train.cars.forEach(c => scene.remove(c));
+  train.cars = createTrainCars();
+  train.cars.forEach(c => scene.add(c));
+  train.mesh = train.cars[0]; // lead car reference for compatibility
+  train.t = 0;
+  train.atStation = true;
+  train.currentStationIdx = 0;
+  train.unloadTimer = 3;
+  train.lastStopTime = [0, 0, 0, 0];
+}
+
+function updateTrain(delta) {
+  if (!train.mesh || !world?.trainPath) return;
+  const curve = world.trainPath;
+  const now = performance.now() * 0.001;
+
+  if (train.atStation) {
+    train.unloadTimer -= delta;
+    if (train.unloadTimer <= 0) {
+      // Only spawn guests at the South station (idx 0)
+      if (train.currentStationIdx === 0) {
+        const stationPos = curve.getPointAt(STATION_T[0]);
+        const batch = train.pendingSessions.splice(0, train.capacity);
+        for (let i = 0; i < batch.length; i++) {
+          const spawnPos = new THREE.Vector3(
+            stationPos.x + (i - batch.length / 2) * 1.5,
+            0,
+            stationPos.z + 8 // offset inward (north) toward park
+          );
+          _spawnCharacterFromCar(batch[i], spawnPos);
+        }
+      }
+      train.atStation = false;
+      train.currentStationIdx = -1;
+    }
+  } else {
+    const prevT = train.t;
+    train.t = (train.t + delta * train.speed) % 1;
+
+    // Check if we crossed any station
+    for (let s = 0; s < 4; s++) {
+      const st = STATION_T[s];
+      // Detect crossing: prevT < st and t >= st, or wrap (prevT near 1, t near 0, st=0)
+      const crossed = (s === 0)
+        ? (prevT > 0.95 && train.t < 0.05)
+        : (prevT < st && train.t >= st);
+
+      if (crossed && (now - train.lastStopTime[s]) > 15) {
+        // Stop at this station if there are passengers (for south) or just pause briefly (others)
+        const shouldStop = (s === 0 && train.pendingSessions.length > 0) || (s !== 0 && Math.random() < 0.3);
+        if (shouldStop) {
+          train.t = st;
+          train.atStation = true;
+          train.currentStationIdx = s;
+          train.unloadTimer = s === 0 ? 2.5 : 1.5;
+          train.lastStopTime[s] = now;
+          break;
+        }
+      }
+    }
   }
 
-  return car;
+  // Position each car independently on the curve (like roller coaster train)
+  const CAR_SPACING = 0.008; // t-parameter offset — matches connector rod length
+  if (train.cars) {
+    for (let i = 0; i < train.cars.length; i++) {
+      const carT = (train.t - i * CAR_SPACING + 1) % 1;
+      const pos = curve.getPointAt(carT);
+      const nextT = (carT + 0.003) % 1;
+      const nextPos = curve.getPointAt(nextT);
+      train.cars[i].position.copy(pos);
+      train.cars[i].lookAt(nextPos);
+    }
+  }
 }
 
-function spawnArrivalCar(session) {
-  const car = createCarMesh();
-  const fromX = (Math.random() - 0.5) * 8;
-  const from = new THREE.Vector3(fromX, 0, 55);
-  const to = new THREE.Vector3(fromX * 0.3, 0, 20);
-  car.position.copy(from);
-  car.rotation.y = Math.PI; // face toward the park
-  scene.add(car);
+// --- Assembly animation (rides drop from sky during load) ---
 
-  activeCars.push({
-    group: car,
-    from, to,
-    t: 0,
-    speed: 0.6 + Math.random() * 0.2,
-    onComplete: () => {
-      scene.remove(car);
-      // Now spawn the character at parking lot
-      const spawnPos = to.clone().add(new THREE.Vector3((Math.random() - 0.5) * 3, 0, -1));
-      _spawnCharacterFromCar(session, spawnPos);
-    },
+let assemblyAnims = []; // { mesh, targetY, startTime, duration }
+
+function startAssemblyAnimation() {
+  if (!world) return;
+  assemblyAnims = [];
+  const now = performance.now() * 0.001;
+
+  // Rides drop from sky with stagger
+  world.rides.forEach((ride, i) => {
+    const targetY = ride.group.position.y;
+    ride.group.position.y = 40 + Math.random() * 20;
+    assemblyAnims.push({
+      mesh: ride.group,
+      targetY,
+      startTime: now + 0.5 + i * 0.3,
+      duration: 1.2,
+    });
   });
+
+  // Train cars drop in last
+  if (train.cars) {
+    train.cars.forEach((car, i) => {
+      const targetY = car.position.y;
+      car.position.y = 50;
+      assemblyAnims.push({
+        mesh: car,
+        targetY,
+        startTime: now + 0.5 + world.rides.length * 0.3 + 0.5 + i * 0.2,
+        duration: 1.5,
+      });
+    });
+  }
 }
 
-function spawnDepartureCar(position) {
-  const car = createCarMesh();
-  const from = new THREE.Vector3(position.x, 0, position.z);
-  const to = new THREE.Vector3(position.x + (Math.random() - 0.5) * 4, 0, 55);
-  car.position.copy(from);
-  car.rotation.y = 0; // face away from park
-  scene.add(car);
+function updateAssembly(delta) {
+  if (assemblyAnims.length === 0) return;
+  const now = performance.now() * 0.001;
 
-  activeCars.push({
-    group: car,
-    from, to,
-    t: 0,
-    speed: 0.5 + Math.random() * 0.3,
-    onComplete: () => { scene.remove(car); },
-  });
-}
+  for (let i = assemblyAnims.length - 1; i >= 0; i--) {
+    const a = assemblyAnims[i];
+    if (now < a.startTime) continue;
 
-function updateCars(delta) {
-  for (let i = activeCars.length - 1; i >= 0; i--) {
-    const car = activeCars[i];
-    car.t += delta * car.speed;
-    if (car.t >= 1) {
-      car.onComplete();
-      activeCars.splice(i, 1);
+    const elapsed = now - a.startTime;
+    const t = Math.min(1, elapsed / a.duration);
+
+    // Bounce ease-out: gravity fall with damped spring
+    let y;
+    if (t < 0.6) {
+      // Falling: quadratic ease-in
+      const ft = t / 0.6;
+      y = a.targetY + (50 - a.targetY) * (1 - ft * ft);
     } else {
-      // Ease in/out
-      const ease = car.t < 0.5
-        ? 2 * car.t * car.t
-        : 1 - Math.pow(-2 * car.t + 2, 2) / 2;
-      car.group.position.lerpVectors(car.from, car.to, ease);
+      // Bounce/settle: damped oscillation
+      const bt = (t - 0.6) / 0.4;
+      const bounce = Math.sin(bt * Math.PI * 2) * (1 - bt) * 1.5;
+      y = a.targetY + bounce;
+    }
+    a.mesh.position.y = Math.max(a.targetY, y);
+
+    if (t >= 1) {
+      a.mesh.position.y = a.targetY;
+      assemblyAnims.splice(i, 1);
     }
   }
 }
@@ -1043,11 +1162,11 @@ const MIN_LOAD_MS = 10000; // show box art for at least 10 seconds
 async function main() {
   setLoadingProgress(10, 'Initializing...');
   initScene();
-  setupDateFilter();
+  setupRebuildButton();
   setupTimeline();
   setupPanelCollapse();
 
-  await buildWorld(currentRange);
+  await buildWorld();
 
   // Enforce minimum loading time so you can admire the box art
   const elapsed = performance.now() - LOAD_START;

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PathGraph } from './pathfinding.js';
-import { Ride, RIDE_TYPES, RIDE_FOOTPRINTS } from './rides.js';
+import { Ride, RIDE_TYPES, RIDE_FOOTPRINTS, RIDE_CATALOG } from './rides.js';
+import { ParkLayout, T } from './parkLayout.js';
 
 // ── RCT2 colour palette ──────────────────────────────────────────────────────
 const STONE = 0xc8b898;
@@ -16,7 +17,6 @@ const STREET_W = 6;
 const STREET_GAP = 3;
 const STREET_START_Z = -6;
 
-const POND_X = 28, POND_Z = 12, POND_R = 6;
 
 // ── Noise utility ────────────────────────────────────────────────────────────
 function _hash(x, z) {
@@ -119,28 +119,31 @@ export class World {
     this.siteName = 'THEME PARK';
     this.billboards = [];
     this.balloons = [];
-    this.pondWater = null;
     this.fountain = null;
   }
 
   build(pages) {
-    this.createGround();
-    this._createEarthSides();
+    // Generate tile-based layout first (determines map size)
+    const layout = new ParkLayout();
+    const plan = layout.generate(pages);
+    this.plan = plan;
+
+    // Ground and earth sides scale to grid
+    const worldSize = plan.gridSize * 2; // tiles * tile_size
+    this.createGround(worldSize);
+    this._createEarthSides(worldSize);
     this.createSky();
 
-    // Core path nodes
-    this.pathGraph.addNode('spawn', new THREE.Vector3(0, 0, 8));
-    this.pathGraph.addNode('hub', new THREE.Vector3(0, 0, 0));
-    this.pathGraph.addNode('exit', new THREE.Vector3(0, 0, 40));
-    this.pathGraph.addEdge('spawn', 'hub');
-    this.pathGraph.addEdge('spawn', 'exit');
-
-    this.layoutRides(pages);
-    this.createParkingLot();
+    // Render everything from the plan
+    this._buildPathGraphFromPlan(plan);
+    this._placeRidesFromPlan(plan);
+    this._renderPaths(plan);
+    this._renderQueues(plan);
+    this._renderDecorations(plan);
+    this._renderPerimeterFence(plan);
+    this._renderTrainTrack();
     this._createEntranceGate();
     this._createPlaza();
-    this._createParkFurniture();
-    this.createDecorations();
 
     console.log(`%c[World] Build complete: ${this.rooms.length} rides, path nodes: ${this.pathGraph.nodes.size}`, 'color:#ce93d8');
     this.pathGraph.dump();
@@ -156,50 +159,20 @@ export class World {
   //  TERRAIN
   // ══════════════════════════════════════════════════════════════════════════
 
-  createGround() {
-    const SIZE = 200;
+  createGround(worldSize = 200) {
+    const SIZE = worldSize + 40; // add margin around the grid
     const SEGS = 50;
     const groundGeo = new THREE.PlaneGeometry(SIZE, SIZE, SEGS, SEGS);
     const pos = groundGeo.attributes.position;
 
-    // Height map: flat center, rolling hills at perimeter, pond depression
-    for (let i = 0; i < pos.count; i++) {
-      const gx = pos.getX(i);
-      const gy = pos.getY(i);
-      const wx = gx, wz = -gy; // world coords after -PI/2 rotation
-      const dist = Math.sqrt(wx * wx + wz * wz);
-
-      let h = 0;
-      // Hills at perimeter (keep center flat for rides)
-      if (dist > 35) {
-        const blend = Math.min(1, (dist - 35) / 40);
-        h = (fbm(wx * 0.025, wz * 0.025) - 0.4) * 3 * blend;
-        h = Math.max(h, 0); // no negative hills in outer area
-      }
-
-      // Pond depression
-      const pd = Math.sqrt((wx - POND_X) ** 2 + (wz - POND_Z) ** 2);
-      if (pd < POND_R + 2) {
-        const pondBlend = Math.max(0, 1 - pd / (POND_R + 2));
-        const dip = -0.7 * pondBlend * pondBlend;
-        h = Math.min(h + dip, dip);
-      }
-
-      pos.setZ(i, h);
-    }
-
+    // Flat terrain — all vertices at h=0
     // Vertex colours for grass variation
     const colors = new Float32Array(pos.count * 3);
     const base = new THREE.Color(GRASS);
     for (let i = 0; i < pos.count; i++) {
       const wx = pos.getX(i), wz = -pos.getY(i);
       const c = base.clone();
-      // Noise-based lightness variation
       c.offsetHSL(0, 0, (fbm(wx * 0.08, wz * 0.08, 2) - 0.5) * 0.1);
-      // Darker near pond
-      const pd = Math.sqrt((wx - POND_X) ** 2 + (wz - POND_Z) ** 2);
-      if (pd < POND_R + 4) c.offsetHSL(0.03, -0.05, -0.04);
-      // Random micro-variation
       c.offsetHSL(0, 0, (Math.random() - 0.5) * 0.02);
       colors[i * 3] = c.r;
       colors[i * 3 + 1] = c.g;
@@ -215,55 +188,12 @@ export class World {
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     this.scene.add(ground);
-
-    // ── Pond water surface ──
-    const waterGeo = new THREE.CircleGeometry(POND_R, 16);
-    const water = new THREE.Mesh(waterGeo, new THREE.MeshLambertMaterial({
-      color: 0x3080c0, transparent: true, opacity: 0.55, flatShading: true,
-    }));
-    water.rotation.x = -Math.PI / 2;
-    water.position.set(POND_X, -0.15, POND_Z);
-    this.scene.add(water);
-    this.pondWater = water;
-
-    // Earth banks around pond
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2;
-      const bank = new THREE.Mesh(
-        new THREE.BoxGeometry(1.6 + Math.random() * 0.4, 0.35, 0.7),
-        mat(EARTH)
-      );
-      bank.position.set(
-        POND_X + Math.cos(a) * (POND_R + 0.3),
-        -0.1,
-        POND_Z + Math.sin(a) * (POND_R + 0.3)
-      );
-      bank.rotation.y = a;
-      bank.castShadow = true;
-      this.scene.add(bank);
-    }
-
-    // Reeds near pond
-    for (let i = 0; i < 8; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = POND_R - 0.5 + Math.random() * 2;
-      const reed = new THREE.Mesh(
-        new THREE.BoxGeometry(0.06, 1.2 + Math.random() * 0.8, 0.06),
-        mat(0x2d7018)
-      );
-      reed.position.set(
-        POND_X + Math.cos(a) * r,
-        0.4,
-        POND_Z + Math.sin(a) * r
-      );
-      this.scene.add(reed);
-    }
   }
 
   // ── Earth cliff sides ──
 
-  _createEarthSides() {
-    const HALF = 100;
+  _createEarthSides(worldSize = 200) {
+    const HALF = (worldSize + 40) / 2;
     const DEPTH = 4;
     const segW = 5;
     const earthMat = mat(EARTH);
@@ -303,7 +233,9 @@ export class World {
   // ══════════════════════════════════════════════════════════════════════════
 
   _createEntranceGate() {
-    const gateZ = 9;
+    // Gate at the south fence line (map edge)
+    const gateWorld = this.plan ? this.plan.grid.tileToWorld(Math.floor(this.plan.gridSize / 2), 3) : { x: 0, z: -74 };
+    const gateZ = gateWorld.z;
     const stoneMat = mat(STONE);
     const stDkMat = mat(STONE_DARK);
     const woodMat = mat(WOOD);
@@ -364,8 +296,8 @@ export class World {
       this.scene.add(bar);
     }
 
-    // Widened entry path from parking to gate to hub
-    for (let z = 5; z <= 17; z += 1.5) {
+    // Short entry path south of gate to station
+    for (let z = gateZ - 8; z <= gateZ - 1; z += 1.5) {
       const seg = new THREE.Mesh(
         new THREE.BoxGeometry(5, 0.06, 1.8),
         new THREE.MeshLambertMaterial({
@@ -375,24 +307,6 @@ export class World {
       seg.position.set(0, 0.09, z);
       seg.receiveShadow = true;
       this.scene.add(seg);
-    }
-
-    // Fences along entry path
-    for (const xSign of [-1, 1]) {
-      const fx = xSign * 3;
-      for (let z = 6; z <= 16; z += 2) {
-        const fPost = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.9, 0.12), mat(WOOD));
-        fPost.position.set(fx, 0.45, z);
-        fPost.castShadow = true;
-        this.scene.add(fPost);
-      }
-      // Rail
-      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 11), mat(WOOD));
-      rail.position.set(fx, 0.75, 11);
-      this.scene.add(rail);
-      const rail2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 11), mat(WOOD));
-      rail2.position.set(fx, 0.45, 11);
-      this.scene.add(rail2);
     }
   }
 
@@ -421,91 +335,68 @@ export class World {
       vertexColors: true, flatShading: true,
     }));
     plaza.rotation.x = -Math.PI / 2;
-    plaza.position.y = 0.08;
+    // Plaza + fountain at dead center (0, 0) — the crossroads hub
+    plaza.position.set(0, 0.08, 0);
     this.scene.add(plaza);
 
-    // ── Fountain ──
+    // ── Grand Fountain ──
     const fountainGroup = new THREE.Group();
 
-    // Base
-    const base = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.3, 0.6, 8), mat(STONE));
-    base.position.y = 0.3;
-    base.castShadow = true;
-    fountainGroup.add(base);
-
-    // Basin (water)
-    const basin = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.7, 1.7, 0.25, 8),
-      new THREE.MeshLambertMaterial({ color: 0x4090d0, transparent: true, opacity: 0.5, flatShading: true })
+    // Lower pool — wide octagonal basin
+    const pool = new THREE.Mesh(new THREE.CylinderGeometry(3.5, 4, 0.5, 8), mat(STONE));
+    pool.position.y = 0.25; pool.castShadow = true; fountainGroup.add(pool);
+    const poolWater = new THREE.Mesh(
+      new THREE.CylinderGeometry(3.2, 3.2, 0.15, 8),
+      new THREE.MeshLambertMaterial({ color: 0x3090d0, transparent: true, opacity: 0.55, flatShading: true })
     );
-    basin.position.y = 0.72;
-    fountainGroup.add(basin);
-    this.fountain = { basin };
+    poolWater.position.y = 0.55; fountainGroup.add(poolWater);
 
-    // Column
-    const col = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.3, 1.8, 6), mat(STONE_DARK));
-    col.position.y = 1.5;
-    col.castShadow = true;
-    fountainGroup.add(col);
+    // Upper tier — smaller raised basin
+    const tier2 = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 0.8, 8), mat(STONE_DARK));
+    tier2.position.y = 0.9; tier2.castShadow = true; fountainGroup.add(tier2);
+    const tier2Water = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.3, 1.3, 0.1, 8),
+      new THREE.MeshLambertMaterial({ color: 0x50b0e0, transparent: true, opacity: 0.6, flatShading: true })
+    );
+    tier2Water.position.y = 1.35; fountainGroup.add(tier2Water);
+    this.fountain = { basin: poolWater };
 
-    // Spout top
-    const spout = new THREE.Mesh(new THREE.SphereGeometry(0.2, 6, 6), mat(0x80c0e0));
-    spout.position.y = 2.5;
-    fountainGroup.add(spout);
+    // Central column
+    const fCol = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 2.5, 6), mat(STONE));
+    fCol.position.y = 2.1; fCol.castShadow = true; fountainGroup.add(fCol);
 
-    // Water droplets (tiny spheres)
-    for (let i = 0; i < 5; i++) {
+    // Crown ornament at top
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.3, 0.5, 6), mat(0xf0c020));
+    crown.position.y = 3.5; fountainGroup.add(crown);
+    const finial = new THREE.Mesh(new THREE.SphereGeometry(0.25, 6, 6), mat(0xf0c020));
+    finial.position.y = 3.9; fountainGroup.add(finial);
+
+    // 4 water spouts shooting outward from the upper tier
+    for (let i = 0; i < 4; i++) {
+      const angle = (i / 4) * Math.PI * 2;
+      const spoutBase = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.2), mat(STONE_DARK));
+      spoutBase.position.set(Math.cos(angle) * 1.2, 1.4, Math.sin(angle) * 1.2);
+      fountainGroup.add(spoutBase);
+    }
+
+    // Water droplets — more and larger for dramatic effect
+    for (let i = 0; i < 12; i++) {
+      const angle = (i / 12) * Math.PI * 2;
+      const dist = 0.8 + Math.random() * 1.5;
       const drop = new THREE.Mesh(
-        new THREE.SphereGeometry(0.06, 4, 4),
-        new THREE.MeshBasicMaterial({ color: 0x80c0e0, transparent: true, opacity: 0.7 })
+        new THREE.SphereGeometry(0.08 + Math.random() * 0.06, 4, 4),
+        new THREE.MeshBasicMaterial({ color: 0x80d0f0, transparent: true, opacity: 0.7 })
       );
-      drop.position.set(
-        (Math.random() - 0.5) * 0.6,
-        1.5 + Math.random() * 1,
-        (Math.random() - 0.5) * 0.6
-      );
+      drop.position.set(Math.cos(angle) * dist, 1.5 + Math.random() * 1.5, Math.sin(angle) * dist);
       drop.userData.dropBase = drop.position.y;
       drop.userData.dropPhase = Math.random() * Math.PI * 2;
       fountainGroup.add(drop);
     }
 
+
+    fountainGroup.position.set(0, 0, 0);
     this.scene.add(fountainGroup);
 
-    // ── Flower beds at compass points ──
-    const flowerColors = [0xd03020, 0xf0c020, 0xe060a0, 0x8040c0, 0xff8040, 0x40c0c0];
-    for (const [fx, fz] of [[5, 5], [-5, 5], [5, -5], [-5, -5]]) {
-      const bed = new THREE.Group();
-      const soil = new THREE.Mesh(new THREE.BoxGeometry(2, 0.35, 2), mat(0x9a7848));
-      soil.position.y = 0.18;
-      soil.castShadow = true;
-      bed.add(soil);
-      const border = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.15, 2.2), mat(STONE_DARK));
-      border.position.y = 0.38;
-      bed.add(border);
-      // Flowers
-      for (let f = 0; f < 6; f++) {
-        const flower = new THREE.Mesh(
-          new THREE.BoxGeometry(0.25, 0.3, 0.25),
-          mat(flowerColors[f % flowerColors.length])
-        );
-        flower.position.set(
-          (Math.random() - 0.5) * 1.4,
-          0.55,
-          (Math.random() - 0.5) * 1.4
-        );
-        bed.add(flower);
-      }
-      bed.position.set(fx, 0, fz);
-      this.scene.add(bed);
-    }
-
-    // ── Lamp posts around plaza ──
-    for (let i = 0; i < 6; i++) {
-      const a = (i / 6) * Math.PI * 2;
-      const lx = Math.cos(a) * 8;
-      const lz = Math.sin(a) * 8;
-      this._createLampPost(lx, lz, i < 2); // first 2 get point lights
-    }
   }
 
   _createLampPost(x, z, withLight = false) {
@@ -526,55 +417,8 @@ export class World {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  PARK FURNITURE
+  //  FURNITURE HELPERS (called from tile-plan rendering)
   // ══════════════════════════════════════════════════════════════════════════
-
-  _createParkFurniture() {
-    const mainEnd = this.streetExtentZ || -50;
-
-    // ── Benches along main street ──
-    for (let z = STREET_START_Z - 4; z > mainEnd + 3; z -= 8) {
-      const side = Math.floor((z - STREET_START_Z) / 8) % 2 === 0 ? -1 : 1;
-      this._createBench(side * (STREET_W / 2 + 1.5), z, side < 0 ? Math.PI / 2 : -Math.PI / 2);
-    }
-
-    // ── Trash cans ──
-    for (let z = STREET_START_Z - 6; z > mainEnd + 5; z -= 12) {
-      const side = Math.floor((z - STREET_START_Z) / 12) % 2 === 0 ? 1 : -1;
-      this._createTrashCan(side * (STREET_W / 2 + 1), z);
-    }
-
-    // ── Lamp posts along main street ──
-    for (let z = STREET_START_Z - 2; z > mainEnd + 3; z -= 10) {
-      for (const xSign of [-1, 1]) {
-        this._createLampPost(xSign * (STREET_W / 2 + 0.5), z);
-      }
-    }
-
-    // ── Info boards ──
-    this._createInfoBoard(4, STREET_START_Z + 1, 'Welcome!');
-    if (mainEnd < -20) {
-      this._createInfoBoard(-4, (STREET_START_Z + mainEnd) / 2, 'Rides');
-    }
-
-    // ── Extra flower beds near junctions ──
-    for (const [fx, fz] of [[3, STREET_START_Z], [-3, STREET_START_Z]]) {
-      const bed = new THREE.Group();
-      const soil = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.3, 1.5), mat(0x9a7848));
-      soil.position.y = 0.15;
-      bed.add(soil);
-      for (let f = 0; f < 4; f++) {
-        const flower = new THREE.Mesh(
-          new THREE.BoxGeometry(0.2, 0.25, 0.2),
-          mat([0xd03020, 0xf0c020, 0xe060a0, 0x40c0c0][f])
-        );
-        flower.position.set((Math.random() - 0.5) * 1, 0.42, (Math.random() - 0.5) * 1);
-        bed.add(flower);
-      }
-      bed.position.set(fx, 0, fz);
-      this.scene.add(bed);
-    }
-  }
 
   _createBench(x, z, rotY = 0) {
     const bench = new THREE.Group();
@@ -599,13 +443,13 @@ export class World {
   }
 
   _createTrashCan(x, z) {
-    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.18, 0.6, 6), mat(0x306030));
-    body.position.set(x, 0.3, z);
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.3, 1.0, 6), mat(0x306030));
+    body.position.set(x, 0.5, z);
     body.castShadow = true;
     this.scene.add(body);
 
-    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.06, 6), mat(0x285028));
-    rim.position.set(x, 0.63, z);
+    const rim = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.08, 6), mat(0x285028));
+    rim.position.set(x, 1.04, z);
     this.scene.add(rim);
   }
 
@@ -627,327 +471,464 @@ export class World {
     this.billboards.push(board);
   }
 
+
   // ══════════════════════════════════════════════════════════════════════════
-  //  PARKING LOT
+  //  TILE-PLAN DRIVEN LAYOUT
   // ══════════════════════════════════════════════════════════════════════════
 
-  createParkingLot() {
-    const asphalt = new THREE.Mesh(
-      new THREE.BoxGeometry(16, 0.08, 10),
-      new THREE.MeshLambertMaterial({ color: 0x505050 })
-    );
-    asphalt.position.set(0, 0.07, 22);
-    asphalt.receiveShadow = true;
-    this.scene.add(asphalt);
-
-    for (let i = -3; i <= 3; i++) {
-      const line = new THREE.Mesh(
-        new THREE.BoxGeometry(0.1, 0.02, 3),
-        new THREE.MeshBasicMaterial({ color: 0xeeeeee })
-      );
-      line.position.set(i * 2, 0.12, 22);
-      this.scene.add(line);
+  _buildPathGraphFromPlan(plan) {
+    const grid = plan.grid;
+    for (const nd of plan.pathNodeDefs) {
+      const { x, z } = grid.tileToWorld(nd.col, nd.row);
+      this.pathGraph.addNode(nd.id, new THREE.Vector3(x, 0, z));
     }
-
-    const border = new THREE.Mesh(
-      new THREE.BoxGeometry(16.5, 0.15, 0.2),
-      new THREE.MeshLambertMaterial({ color: 0x808080 })
-    );
-    border.position.set(0, 0.08, 17.2);
-    this.scene.add(border);
-
-    this.pathGraph.addNode('parking', new THREE.Vector3(0, 0, 20));
-    this.pathGraph.addEdge('spawn', 'parking');
-    this.pathGraph.addEdge('parking', 'exit');
-
-    // Access road from parking lot off into the distance
-    for (let z = 27; z <= 60; z += 2) {
-      const roadSeg = new THREE.Mesh(
-        new THREE.BoxGeometry(5, 0.07, 2.4),
-        new THREE.MeshLambertMaterial({ color: 0x505050 })
-      );
-      roadSeg.position.set(0, 0.06, z);
-      roadSeg.receiveShadow = true;
-      this.scene.add(roadSeg);
-    }
-    // Center line
-    for (let z = 27; z <= 58; z += 4) {
-      const line = new THREE.Mesh(
-        new THREE.BoxGeometry(0.15, 0.02, 1.5),
-        new THREE.MeshBasicMaterial({ color: 0xeeee88 })
-      );
-      line.position.set(0, 0.11, z);
-      this.scene.add(line);
+    for (const edge of plan.pathEdgeDefs) {
+      this.pathGraph.addEdge(edge.from, edge.to);
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  //  RIDE LAYOUT (unchanged logic)
-  // ══════════════════════════════════════════════════════════════════════════
+  _placeRidesFromPlan(plan) {
+    const grid = plan.grid;
 
-  layoutRides(pages) {
-    if (pages.length === 0) return;
+    for (const rp of plan.ridePlacements) {
+      const { type: rideType, page, topLeftCol, topLeftRow, tilesW, tilesD, rotation, entryTile, exitTile } = rp;
 
-    const sorted = [...pages].sort((a, b) => b.y - a.y);
-    const MAIN_MAX = Math.min(6, sorted.length);
-    const mainPages = sorted.slice(0, MAIN_MAX);
-    const crossPages = sorted.slice(MAIN_MAX);
-    const allStreetNodes = ['hub'];
+      // Ride center in world coords
+      const centerCol = topLeftCol + tilesW / 2;
+      const centerRow = topLeftRow + tilesD / 2;
+      const { x, z } = grid.tileToWorld(Math.floor(centerCol), Math.floor(centerRow));
 
-    // Main avenue
-    let leftZ = STREET_START_Z;
-    let rightZ = STREET_START_Z;
+      const ride = new Ride(this.scene, rideType, page.x, page.y);
+      ride.group.position.set(x, 0, z);
+      ride.group.rotation.y = rotation;
+      this.scene.add(ride.group);
+      this.rides.push(ride);
 
-    mainPages.forEach((page, idx) => {
-      const rideType = RIDE_TYPES[idx % RIDE_TYPES.length];
-      const { x, z, useLeft } = this._placeRide(page, rideType, idx, leftZ, rightZ, 0);
-      const footprint = RIDE_FOOTPRINTS[rideType];
-      if (useLeft) {
-        leftZ = z - footprint.depth / 2 - STREET_GAP;
+      // Entry position (where guests join queue / board)
+      const entryWorld = entryTile
+        ? grid.tileToWorld(entryTile.col, entryTile.row)
+        : { x, z: z + tilesD + 2 };
+      ride.entrancePosition.set(entryWorld.x, 0, entryWorld.z);
+
+      // Exit position (where guests leave after riding)
+      if (exitTile) {
+        const exitWorld = grid.tileToWorld(exitTile.col, exitTile.row);
+        ride.exitPosition = new THREE.Vector3(exitWorld.x, 0, exitWorld.z);
       } else {
-        rightZ = z - footprint.depth / 2 - STREET_GAP;
+        ride.exitPosition = ride.entrancePosition.clone();
       }
-    });
 
-    const mainEndZ = Math.min(leftZ, rightZ) - 2;
-    this.streetExtentZ = mainEndZ;
-    this._createMainStreet(STREET_START_Z + 4, mainEndZ);
-
-    let nodeZ = STREET_START_Z;
-    while (nodeZ > mainEndZ) {
-      const nodeId = `street:${Math.round(nodeZ)}`;
-      this.pathGraph.addNode(nodeId, new THREE.Vector3(0, 0, nodeZ));
-      this.pathGraph.addEdge(allStreetNodes[allStreetNodes.length - 1], nodeId);
-      allStreetNodes.push(nodeId);
-      nodeZ -= 8;
-    }
-
-    // Cross streets
-    if (crossPages.length > 0) {
-      const junctionZ = Math.max(mainEndZ + 5, -40);
-      const junctionId = allStreetNodes[allStreetNodes.length - 1];
-      const eastPages = crossPages.filter((_, i) => i % 2 === 0);
-      const westPages = crossPages.filter((_, i) => i % 2 === 1);
-
-      for (const [sidePages, xDir, label] of [[eastPages, 1, 'east'], [westPages, -1, 'west']]) {
-        if (sidePages.length === 0) continue;
-        const crossStartX = xDir * 12;
-        const crossEndX = crossStartX + xDir * (sidePages.length - 1) * 14;
-
-        // Continuous cross-street surface from hub to furthest ride
-        const minX = Math.min(0, crossStartX, crossEndX) - 2;
-        const maxX = Math.max(0, crossStartX, crossEndX) + 2;
-        const streetLen = maxX - minX;
-        const crossSegs = Math.ceil(streetLen / 2);
-        for (let si = 0; si <= crossSegs; si++) {
-          const sx = minX + (si / crossSegs) * streetLen;
-          const seg = new THREE.Mesh(
-            new THREE.BoxGeometry(2.2, 0.06, STREET_W + 1),
-            new THREE.MeshLambertMaterial({
-              color: new THREE.Color(DIRT).offsetHSL(0, 0, (Math.random() - 0.5) * 0.04),
-            })
-          );
-          seg.position.set(sx, 0.09, junctionZ);
-          seg.receiveShadow = true;
-          this.scene.add(seg);
-        }
-
-        const crossNodes = [];
-        for (let ni = 0; ni < sidePages.length + 1; ni++) {
-          const crossX = crossStartX + xDir * ni * 14;
-          if (Math.abs(crossX) > 75) break;
-          const crossNodeId = `cross-${label}:${ni}`;
-          this.pathGraph.addNode(crossNodeId, new THREE.Vector3(crossX, 0, junctionZ));
-          if (crossNodes.length > 0) this.pathGraph.addEdge(crossNodes[crossNodes.length - 1], crossNodeId);
-          crossNodes.push(crossNodeId);
-          allStreetNodes.push(crossNodeId);
-        }
-        if (crossNodes.length > 0) this.pathGraph.addEdge(junctionId, crossNodes[0]);
-
-        sidePages.forEach((page, idx) => {
-          const globalIdx = MAIN_MAX + (xDir === 1 ? idx * 2 : idx * 2 + 1);
-          const rideType = RIDE_TYPES[globalIdx % RIDE_TYPES.length];
-          const footprint = RIDE_FOOTPRINTS[rideType];
-          const halfW = footprint.width / 2, halfD = footprint.depth / 2;
-          const rideX = crossStartX + xDir * idx * 14;
-          if (Math.abs(rideX) > 75) return;
-
-          const useTop = idx % 2 === 0;
-          const rideZ = junctionZ + (useTop ? -1 : 1) * (STREET_W / 2 + halfD + 1.5);
-          const ride = new Ride(this.scene, rideType, page.x, page.y);
-          ride.group.position.set(rideX, 0, rideZ);
-          if (useTop) ride.group.rotation.y = Math.PI;
-          this.scene.add(ride.group);
-          this.rides.push(ride);
-
-          this._addRideSignsAndNodes(ride, page, rideType, rideX, rideZ, halfW, halfD);
-
-          const entranceZ = useTop ? rideZ + halfD + 1 : rideZ - halfD - 1;
-          this._drawPathSegment(
-            new THREE.Vector3(rideX, 0, junctionZ),
-            new THREE.Vector3(rideX, 0, entranceZ)
-          );
+      // Queue positions (for QueueManager)
+      if (rp.queuePath && rp.queuePath.length > 0) {
+        ride.queuePositions = rp.queuePath.map(qt => {
+          const w = grid.tileToWorld(qt.col, qt.row);
+          return new THREE.Vector3(w.x, 0, w.z);
         });
       }
+
+      // Ride node IDs
+      const rideNodeId = `room:${page.x}`;
+      ride.rideNodeId = rideNodeId;
+
+      // Signs
+      const displayName = this._shortName(page.x);
+      const signY = this._rideSignHeight(rideType);
+      const signTex = createTextTexture(displayName, { fontSize: 36, width: 512, height: 96 });
+      const signMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(4, 0.8),
+        new THREE.MeshBasicMaterial({ map: signTex, transparent: true, depthTest: false })
+      );
+      signMesh.position.set(x, signY, z);
+      signMesh.renderOrder = 999;
+      signMesh.userData.billboard = true;
+      this.uiScene.add(signMesh);
+
+      const countTex = createTextTexture(`${page.y} visits`, { fontSize: 24, fontColor: '#1a1a1a', width: 256, height: 48 });
+      const countMesh = new THREE.Mesh(
+        new THREE.PlaneGeometry(2.2, 0.45),
+        new THREE.MeshBasicMaterial({ map: countTex, transparent: true, depthTest: false })
+      );
+      countMesh.position.set(x, signY - 0.8, z);
+      countMesh.renderOrder = 999;
+      countMesh.userData.billboard = true;
+      this.uiScene.add(countMesh);
+      this.billboards.push(signMesh, countMesh);
+
+      // Room + bounds
+      const halfW = (tilesW * 2) / 2;
+      const halfD = (tilesD * 2) / 2;
+      const bounds = {
+        minX: x - halfW + 0.5, maxX: x + halfW - 0.5,
+        minZ: z - halfD + 0.5, maxZ: z + halfD - 0.5,
+      };
+      const ridePos = new THREE.Vector3(x, 0, z);
+      const room = new Room(page.x, ridePos, page.y, rideNodeId, bounds);
+      room.ride = ride;
+      this.rooms.push(room);
+
     }
+  }
 
-    // Connect ride entrances to nearest street node
-    this.rides.forEach(ride => {
-      const entranceNodeId = `ride-entrance:${ride.name}`;
-      const entrancePos = this.pathGraph.nodes.get(entranceNodeId)?.position;
-      if (!entrancePos) return;
-      let bestNode = 'hub', bestDist = Infinity;
-      for (const sn of allStreetNodes) {
-        const snPos = this.pathGraph.nodes.get(sn)?.position;
-        if (!snPos) continue;
-        const dist = entrancePos.distanceTo(snPos);
-        if (dist < bestDist) { bestDist = dist; bestNode = sn; }
+  _renderPaths(plan) {
+    const grid = plan.grid;
+    for (const pt of plan.pathTiles) {
+      const { x, z } = grid.tileToWorld(pt.col, pt.row);
+      const isRoad = pt.type === T.ROAD;
+
+      const color = isRoad ? 0x505050 : DIRT;
+      const jitter = 0.15;
+      const seg = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          1.8 + Math.random() * 0.4,
+          isRoad ? 0.07 : 0.06,
+          1.8 + Math.random() * 0.4
+        ),
+        new THREE.MeshLambertMaterial({
+          color: new THREE.Color(color).offsetHSL(0, 0, (Math.random() - 0.5) * 0.04),
+        })
+      );
+      seg.position.set(
+        x + (Math.random() - 0.5) * jitter,
+        0.09,
+        z + (Math.random() - 0.5) * jitter
+      );
+      seg.rotation.y = (Math.random() - 0.5) * 0.09; // slight rotation jitter
+      seg.receiveShadow = true;
+      this.scene.add(seg);
+
+      // Road center line
+      if (isRoad && pt.col === 40 && pt.row % 2 === 0) {
+        const line = new THREE.Mesh(
+          new THREE.BoxGeometry(0.15, 0.02, 1.5),
+          new THREE.MeshBasicMaterial({ color: 0xeeee88 })
+        );
+        line.position.set(x, 0.11, z);
+        this.scene.add(line);
       }
-      this.pathGraph.addEdge(bestNode, entranceNodeId);
-    });
-
-    this._createVendorStalls(mainEndZ);
-    this._createBalloons();
+    }
   }
 
-  _placeRide(page, rideType, globalIdx, leftZ, rightZ, streetCenterX) {
-    const footprint = RIDE_FOOTPRINTS[rideType];
-    const halfW = footprint.width / 2, halfD = footprint.depth / 2;
-    const useLeft = leftZ >= rightZ;
-    const xSign = useLeft ? -1 : 1;
-    const x = streetCenterX + xSign * (STREET_W / 2 + halfW + 1.5);
-    const cursorZ = useLeft ? leftZ : rightZ;
-    const z = Math.max(cursorZ - halfD, -75);
-
-    const ride = new Ride(this.scene, rideType, page.x, page.y);
-    ride.group.position.set(x, 0, z);
-    if (!useLeft) ride.group.rotation.y = Math.PI;
-    this.scene.add(ride.group);
-    this.rides.push(ride);
-    this._addRideSignsAndNodes(ride, page, rideType, x, z, halfW, halfD);
-
-    const entranceZ = z + halfD + 1;
-    this._drawPathSegment(
-      new THREE.Vector3(streetCenterX, 0, entranceZ),
-      new THREE.Vector3(x + (useLeft ? 1 : -1), 0, entranceZ)
-    );
-    const doorPatch = new THREE.Mesh(
-      new THREE.BoxGeometry(3, 0.06, 2.5),
-      new THREE.MeshLambertMaterial({ color: new THREE.Color(DIRT).offsetHSL(0, 0, -0.03) })
-    );
-    doorPatch.position.set(x, 0.09, entranceZ);
-    doorPatch.receiveShadow = true;
-    this.scene.add(doorPatch);
-
-    return { x, z, useLeft };
+  _renderQueues(plan) {
+    // Queue areas are just path tiles — no fencing, guests line up naturally
+    for (const qt of plan.queueAreas) {
+      const { x, z } = plan.grid.tileToWorld(qt.col, qt.row);
+      const seg = new THREE.Mesh(
+        new THREE.BoxGeometry(1.9, 0.06, 1.9),
+        new THREE.MeshLambertMaterial({
+          color: new THREE.Color(DIRT).offsetHSL(0, 0, -0.03),
+        })
+      );
+      seg.position.set(x, 0.09, z);
+      seg.receiveShadow = true;
+      this.scene.add(seg);
+    }
   }
 
-  _addRideSignsAndNodes(ride, page, rideType, x, z, halfW, halfD) {
-    const displayName = this._shortName(page.x);
-    const signTex = createTextTexture(displayName, { fontSize: 36, width: 512, height: 96 });
-    const signMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(4, 0.8),
-      new THREE.MeshBasicMaterial({ map: signTex, transparent: true, depthTest: false })
-    );
-    const signY = this._rideSignHeight(rideType);
-    signMesh.position.set(x, signY, z);
-    signMesh.renderOrder = 999;
-    signMesh.userData.billboard = true;
-    this.uiScene.add(signMesh);
-
-    const countTex = createTextTexture(`${page.y} visits`, { fontSize: 24, fontColor: '#1a1a1a', width: 256, height: 48 });
-    const countMesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.2, 0.45),
-      new THREE.MeshBasicMaterial({ map: countTex, transparent: true, depthTest: false })
-    );
-    countMesh.position.set(x, signY - 0.8, z);
-    countMesh.renderOrder = 999;
-    countMesh.userData.billboard = true;
-    this.uiScene.add(countMesh);
-    this.billboards.push(signMesh, countMesh);
-
-    const entranceZ = z + halfD + 1;
-    const entrancePos = new THREE.Vector3(x, 0, entranceZ);
-    const entranceNodeId = `ride-entrance:${page.x}`;
-    this.pathGraph.addNode(entranceNodeId, entrancePos);
-    ride.entrancePosition.copy(entrancePos);
-
-    const rideNodeId = `room:${page.x}`;
-    const ridePos = new THREE.Vector3(x, 0, z);
-    this.pathGraph.addNode(rideNodeId, ridePos);
-    this.pathGraph.addEdge(entranceNodeId, rideNodeId);
-    ride.rideNodeId = rideNodeId;
-
-    const bounds = {
-      minX: x - halfW + 0.5, maxX: x + halfW - 0.5,
-      minZ: z - halfD + 0.5, maxZ: z + halfD - 0.5,
-    };
-    const room = new Room(page.x, ridePos, page.y, rideNodeId, bounds);
-    room.ride = ride;
-    this.rooms.push(room);
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  //  VENDOR STALLS & BALLOONS
-  // ══════════════════════════════════════════════════════════════════════════
-
-  _createVendorStalls(mainEndZ) {
+  _renderDecorations(plan) {
+    const grid = plan.grid;
     const stallColors = [0xd03020, 0x2060c0, 0xf0c020, 0x30a030, 0xe07020];
     const stallNames = ['Burgers', 'Drinks', 'Candy', 'Ice Cream', 'Gifts'];
-    const stallZ = [];
-    for (let z = STREET_START_Z - 8; z > mainEndZ + 5; z -= 15) stallZ.push(z);
-
-    stallZ.forEach((z, i) => {
-      const side = i % 2 === 0 ? -1 : 1;
-      const x = side * 2.5;
-      const stall = new THREE.Group();
-
-      const counter = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 1.5), mat(STONE));
-      counter.position.y = 0.6;
-      counter.castShadow = true;
-      stall.add(counter);
-
-      const top = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.1, 1.7), mat(STONE_DARK));
-      top.position.y = 1.25;
-      stall.add(top);
-
-      const canopy = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 2), mat(stallColors[i % stallColors.length]));
-      canopy.position.set(0, 2.2, side * -0.3);
-      canopy.rotation.x = side * 0.15;
-      canopy.castShadow = true;
-      stall.add(canopy);
-
-      for (const px of [-1, 1]) {
-        const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.2, 0.1), mat(WOOD));
-        pole.position.set(px, 1.1, side * -0.8);
-        pole.castShadow = true;
-        stall.add(pole);
-      }
-
-      stall.position.set(x, 0, z);
-      this.scene.add(stall);
-
-      const name = stallNames[i % stallNames.length];
-      const stallSignTex = createTextTexture(name, { fontSize: 28, width: 256, height: 48, bgColor: '#e8dcc0' });
-      const stallSign = new THREE.Mesh(
-        new THREE.PlaneGeometry(1.8, 0.35),
-        new THREE.MeshBasicMaterial({ map: stallSignTex, transparent: true, depthTest: false })
-      );
-      stallSign.position.set(x, 2.6, z);
-      stallSign.renderOrder = 999;
-      stallSign.userData.billboard = true;
-      this.uiScene.add(stallSign);
-      this.billboards.push(stallSign);
-    });
-  }
-
-  _createBalloons() {
+    let stallIdx = 0;
     const balloonColors = [0xd03020, 0x2060c0, 0xf0c020, 0x30a030, 0xe060a0, 0xe07020, 0x8040c0];
+    let balloonIdx = 0;
+
+    for (const dec of plan.decorations) {
+      const { x, z } = grid.tileToWorld(dec.col, dec.row);
+
+      switch (dec.type) {
+        case 'bench':
+          this._createBench(x, z, dec.rotation);
+          break;
+
+        case 'lamp':
+          this._createLampPost(x, z, Math.random() < 0.15);
+          break;
+
+        case 'trash':
+          this._createTrashCan(x, z);
+          break;
+
+        case 'flower': {
+          const bed = new THREE.Group();
+          // Stone border
+          const border = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.25, 1.8), mat(STONE_DARK));
+          border.position.y = 0.12; bed.add(border);
+          // Soil fill
+          const soil = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.3, 1.5), mat(0x6b4a2a));
+          soil.position.y = 0.18; bed.add(soil);
+          // Flowers with stems
+          const fColors = [0xd03020, 0xf0c020, 0xe060a0, 0x40c0c0, 0xff8040, 0x8040c0];
+          for (let f = 0; f < 6; f++) {
+            const fx = (Math.random() - 0.5) * 1.2;
+            const fz = (Math.random() - 0.5) * 1.2;
+            // Stem
+            const stemH = 0.4 + Math.random() * 0.4;
+            const stem = new THREE.Mesh(new THREE.BoxGeometry(0.06, stemH, 0.06), mat(0x2d7018));
+            stem.position.set(fx, 0.35 + stemH / 2, fz); bed.add(stem);
+            // Bloom
+            const bloom = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.2, 0.25), mat(fColors[f]));
+            bloom.position.set(fx, 0.35 + stemH + 0.1, fz);
+            bloom.castShadow = true; bed.add(bloom);
+          }
+          bed.position.set(x, 0, z);
+          this.scene.add(bed);
+          break;
+        }
+
+        case 'stall': // legacy
+        case 'stall_burger': case 'stall_drinks': case 'stall_candy':
+        case 'stall_icecream': case 'stall_gifts': case 'stall_popcorn':
+        case 'stall_souvenirs': {
+          const stallNameMap = {
+            stall: 'Burgers', stall_burger: 'Burgers', stall_drinks: 'Drinks',
+            stall_candy: 'Candy', stall_icecream: 'Ice Cream', stall_gifts: 'Gifts',
+            stall_popcorn: 'Popcorn', stall_souvenirs: 'Souvenirs',
+          };
+          const stall = new THREE.Group();
+          const counter = new THREE.Mesh(new THREE.BoxGeometry(2, 1.2, 1.5), mat(STONE));
+          counter.position.y = 0.6; counter.castShadow = true; stall.add(counter);
+          const sTop = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.1, 1.7), mat(STONE_DARK));
+          sTop.position.y = 1.25; stall.add(sTop);
+          const canopy = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.08, 2), mat(stallColors[stallIdx % stallColors.length]));
+          canopy.position.set(0, 2.2, -0.3); canopy.rotation.x = 0.15; canopy.castShadow = true; stall.add(canopy);
+          for (const px of [-1, 1]) {
+            const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.2, 0.1), mat(WOOD));
+            pole.position.set(px, 1.1, -0.8); pole.castShadow = true; stall.add(pole);
+          }
+          stall.position.set(x, 0, z); stall.rotation.y = dec.rotation;
+          this.scene.add(stall);
+          const sName = stallNameMap[dec.type] || 'Shop';
+          const sTex = createTextTexture(sName, { fontSize: 28, width: 256, height: 48, bgColor: '#e8dcc0' });
+          const sSign = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.35), new THREE.MeshBasicMaterial({ map: sTex, transparent: true, depthTest: false }));
+          sSign.position.set(x, 2.6, z); sSign.renderOrder = 999; sSign.userData.billboard = true;
+          this.uiScene.add(sSign); this.billboards.push(sSign);
+          stallIdx++;
+          break;
+        }
+
+        case 'mascot': {
+          // Chunky mascot figure (like a costumed character)
+          const mascot = new THREE.Group();
+          const bodyColor = [0xd03020, 0x2060c0, 0xf0c020, 0x30a030, 0xe060a0][Math.floor(Math.random() * 5)];
+          const mBody = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.8, 1.0), mat(bodyColor));
+          mBody.position.y = 1.2; mBody.castShadow = true; mascot.add(mBody);
+          // Big head
+          const mHead = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.2, 1.2), mat(bodyColor));
+          mHead.position.y = 2.7; mHead.castShadow = true; mascot.add(mHead);
+          // Eyes
+          for (const ex of [-0.3, 0.3]) {
+            const eye = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.15), mat(0xffffff));
+            eye.position.set(ex, 2.8, 0.55); mascot.add(eye);
+            const pupil = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.05), mat(0x1a1a1a));
+            pupil.position.set(ex, 2.75, 0.62); mascot.add(pupil);
+          }
+          // Smile
+          const smile = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.1, 0.05), mat(0x1a1a1a));
+          smile.position.set(0, 2.4, 0.62); mascot.add(smile);
+          mascot.position.set(x, 0, z); mascot.rotation.y = dec.rotation;
+          this.scene.add(mascot);
+          break;
+        }
+
+        case 'balloon_cart': {
+          // Cart with bunch of balloons
+          const cart = new THREE.Group();
+          const cartBody = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.8, 0.8), mat(WOOD));
+          cartBody.position.y = 0.5; cartBody.castShadow = true; cart.add(cartBody);
+          // Wheels
+          for (const wz of [-0.35, 0.35]) {
+            const w = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.08, 6), mat(0x1a1a1a));
+            w.rotation.z = Math.PI / 2; w.position.set(0.55, 0.2, wz); cart.add(w);
+          }
+          // Pole
+          const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.5, 0.08), mat(0x808080));
+          pole.position.set(0, 2.0, 0); cart.add(pole);
+          // Balloons
+          const bColors = [0xd03020, 0x2060c0, 0xf0c020, 0x30a030, 0xe060a0];
+          for (let b = 0; b < 5; b++) {
+            const balloon = new THREE.Mesh(new THREE.SphereGeometry(0.3, 6, 6), new THREE.MeshLambertMaterial({ color: bColors[b], flatShading: true }));
+            balloon.position.set((Math.random() - 0.5) * 0.6, 3.2 + Math.random() * 0.5, (Math.random() - 0.5) * 0.6);
+            balloon.castShadow = true; cart.add(balloon);
+          }
+          cart.position.set(x, 0, z); cart.rotation.y = dec.rotation;
+          this.scene.add(cart);
+          break;
+        }
+
+        case 'info_board': {
+          const post = new THREE.Mesh(new THREE.BoxGeometry(0.15, 2, 0.15), mat(WOOD));
+          post.position.set(x, 1, z); post.castShadow = true; this.scene.add(post);
+          const texts = ['Park Map', 'You Are Here', 'Info', 'Rides →', '← Exit'];
+          const boardTex = createTextTexture(texts[Math.floor(Math.random() * texts.length)], { fontSize: 24, width: 256, height: 48 });
+          const board = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.5), new THREE.MeshBasicMaterial({ map: boardTex, transparent: true, depthTest: false }));
+          board.position.set(x, 2, z); board.renderOrder = 999; board.userData.billboard = true;
+          this.uiScene.add(board); this.billboards.push(board);
+          break;
+        }
+
+        case 'photo_spot': {
+          // Camera-shaped frame
+          const frame = new THREE.Group();
+          const archL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3, 0.2), mat(0xf0c020));
+          archL.position.set(-1.2, 1.5, 0); frame.add(archL);
+          const archR = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3, 0.2), mat(0xf0c020));
+          archR.position.set(1.2, 1.5, 0); frame.add(archR);
+          const archTop = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.3, 0.2), mat(0xf0c020));
+          archTop.position.set(0, 3.1, 0); frame.add(archTop);
+          const camIcon = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, 0.15), mat(0x1a1a1a));
+          camIcon.position.set(0, 3.5, 0); frame.add(camIcon);
+          frame.position.set(x, 0, z); frame.rotation.y = dec.rotation;
+          this.scene.add(frame);
+          break;
+        }
+
+        case 'fountain_small': {
+          const fb = new THREE.Group();
+          const basin = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 1.0, 0.4, 8), mat(STONE));
+          basin.position.y = 0.2; fb.add(basin);
+          const waterDisc = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 0.1, 8), new THREE.MeshLambertMaterial({ color: 0x4090d0, transparent: true, opacity: 0.5, flatShading: true }));
+          waterDisc.position.y = 0.35; fb.add(waterDisc);
+          const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.8, 6), mat(STONE_DARK));
+          spout.position.y = 0.7; fb.add(spout);
+          fb.position.set(x, 0, z);
+          this.scene.add(fb);
+          break;
+        }
+
+        case 'arcade_cabinet': {
+          const cab = new THREE.Group();
+          const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.7), mat(0x2040a0));
+          body.position.y = 0.9; body.castShadow = true; cab.add(body);
+          const screen = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.5, 0.05), mat(0x40ff40));
+          screen.position.set(0, 1.4, 0.38); cab.add(screen);
+          const marquee = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.25, 0.1), mat(0xf0c020));
+          marquee.position.set(0, 1.85, 0.35); cab.add(marquee);
+          cab.position.set(x, 0, z); cab.rotation.y = dec.rotation;
+          this.scene.add(cab);
+          break;
+        }
+
+        case 'strength_test': {
+          const st = new THREE.Group();
+          const tower = new THREE.Mesh(new THREE.BoxGeometry(0.3, 4, 0.3), mat(0xd03020));
+          tower.position.y = 2; tower.castShadow = true; st.add(tower);
+          const bell = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.5), mat(0xf0c020));
+          bell.position.y = 4.1; st.add(bell);
+          const base = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.4, 1.2), mat(WOOD));
+          base.position.y = 0.2; st.add(base);
+          st.position.set(x, 0, z);
+          this.scene.add(st);
+          break;
+        }
+
+        case 'face_paint': {
+          const fp = new THREE.Group();
+          const chair = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.8, 0.5), mat(0xe060a0));
+          chair.position.y = 0.4; fp.add(chair);
+          const easel = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.2, 0.8), mat(WOOD));
+          easel.position.set(0.6, 0.8, 0); fp.add(easel);
+          const canvas = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.7, 0.6), mat(0xf0f0f0));
+          canvas.position.set(0.63, 0.9, 0); fp.add(canvas);
+          const umbrella = new THREE.Mesh(new THREE.ConeGeometry(1.2, 0.5, 6), mat(0xd03020));
+          umbrella.position.set(0.3, 2.5, 0); fp.add(umbrella);
+          const uPole = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.3, 0.06), mat(WOOD));
+          uPole.position.set(0.3, 1.2, 0); fp.add(uPole);
+          fp.position.set(x, 0, z); fp.rotation.y = dec.rotation;
+          this.scene.add(fp);
+          break;
+        }
+
+        case 'restroom': {
+          const rr = new THREE.Group();
+          const rrBody = new THREE.Mesh(new THREE.BoxGeometry(2, 2.5, 2), mat(0xc0a080));
+          rrBody.position.y = 1.25; rrBody.castShadow = true; rr.add(rrBody);
+          const rrRoof = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.2, 2.3), mat(0x6b5e3e));
+          rrRoof.position.y = 2.6; rr.add(rrRoof);
+          const rrDoor = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.6, 0.05), mat(0x4080c0));
+          rrDoor.position.set(0, 0.8, 1.03); rr.add(rrDoor);
+          const rrSign = createTextTexture('Restrooms', { fontSize: 24, width: 256, height: 48, bgColor: '#4080c0', fontColor: '#ffffff' });
+          const rrSignMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.35), new THREE.MeshBasicMaterial({ map: rrSign, transparent: true, depthTest: false }));
+          rrSignMesh.position.set(x, 3, z); rrSignMesh.renderOrder = 999; rrSignMesh.userData.billboard = true;
+          this.uiScene.add(rrSignMesh); this.billboards.push(rrSignMesh);
+          rr.position.set(x, 0, z); rr.rotation.y = dec.rotation;
+          this.scene.add(rr);
+          break;
+        }
+
+        case 'first_aid': {
+          const fa = new THREE.Group();
+          // White tent
+          const tent = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2, 2.2), mat(0xf0f0f0));
+          tent.position.y = 1; tent.castShadow = true; fa.add(tent);
+          const tentRoof = new THREE.Mesh(new THREE.ConeGeometry(1.8, 1, 4), mat(0xf0f0f0));
+          tentRoof.position.y = 2.5; tentRoof.rotation.y = Math.PI / 4; fa.add(tentRoof);
+          // Red cross
+          const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.05), mat(0xd03020));
+          crossH.position.set(0, 1.5, 1.12); fa.add(crossH);
+          const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.8, 0.05), mat(0xd03020));
+          crossV.position.set(0, 1.5, 1.12); fa.add(crossV);
+          // Open flap
+          const flap = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.05), mat(0xe8e8e8));
+          flap.position.set(0.7, 0.75, 1.1); flap.rotation.y = 0.4; fa.add(flap);
+          fa.position.set(x, 0, z); fa.rotation.y = dec.rotation;
+          this.scene.add(fa);
+          break;
+        }
+
+        case 'information_kiosk': {
+          const kiosk = new THREE.Group();
+          const body = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 2.5, 6), mat(0xc6b790));
+          body.position.y = 1.25; body.castShadow = true; kiosk.add(body);
+          const roof = new THREE.Mesh(new THREE.ConeGeometry(1.3, 0.8, 6), mat(0x2060c0));
+          roof.position.y = 3; kiosk.add(roof);
+          // "?" sign
+          const qTex = createTextTexture('?', { fontSize: 48, width: 64, height: 64, bgColor: '#2060c0', fontColor: '#ffffff' });
+          const qSign = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8), new THREE.MeshBasicMaterial({ map: qTex, transparent: true, depthTest: false }));
+          qSign.position.set(x, 3.6, z); qSign.renderOrder = 999; qSign.userData.billboard = true;
+          this.uiScene.add(qSign); this.billboards.push(qSign);
+          // Map display
+          const mapBoard = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.6, 0.05), mat(0xf0e8c0));
+          mapBoard.position.set(0, 1.5, 1.02); kiosk.add(mapBoard);
+          kiosk.position.set(x, 0, z); kiosk.rotation.y = dec.rotation;
+          this.scene.add(kiosk);
+          break;
+        }
+
+        case 'stage_performer': {
+          const stage = new THREE.Group();
+          // Raised platform
+          const platform = new THREE.Mesh(new THREE.BoxGeometry(3, 0.5, 2.5), mat(WOOD));
+          platform.position.y = 0.25; platform.castShadow = true; stage.add(platform);
+          // Performer (simple figure)
+          const perfBody = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1, 0.3), mat(0xe060a0));
+          perfBody.position.y = 1; perfBody.castShadow = true; stage.add(perfBody);
+          const perfHead = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), mat(0xf5c6a0));
+          perfHead.position.y = 1.7; stage.add(perfHead);
+          // Mic stand
+          const micPole = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1.3, 0.04), mat(0x404040));
+          micPole.position.set(0.5, 1.15, 0); stage.add(micPole);
+          const mic = new THREE.Mesh(new THREE.SphereGeometry(0.08, 4, 4), mat(0x1a1a1a));
+          mic.position.set(0.5, 1.85, 0); stage.add(mic);
+          // Small speaker
+          const speaker = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.4), mat(0x1a1a1a));
+          speaker.position.set(-1, 0.75, 0); stage.add(speaker);
+          stage.position.set(x, 0, z); stage.rotation.y = dec.rotation;
+          this.scene.add(stage);
+          break;
+        }
+
+        case 'tree':
+          this.createTree(new THREE.Vector3(x, 0, z));
+          break;
+      }
+    }
+
+    // Balloons near paths
     for (let i = 0; i < 12; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const dist = 5 + Math.random() * 20;
+      const dist = 5 + Math.random() * 25;
       const bx = Math.cos(angle) * dist;
-      const bz = STREET_START_Z - Math.random() * 40;
+      const bz = Math.sin(angle) * dist - 10;
       const color = balloonColors[i % balloonColors.length];
 
       const balloon = new THREE.Group();
@@ -969,80 +950,163 @@ export class World {
     }
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  //  PATHS
-  // ══════════════════════════════════════════════════════════════════════════
+  _renderPerimeterFence(plan) {
+    const grid = plan.grid;
+    for (const ft of plan.fenceTiles) {
+      const { x, z } = grid.tileToWorld(ft.col, ft.row);
 
-  _drawPathSegment(from, to) {
-    const dir = new THREE.Vector3().subVectors(to, from);
-    const length = dir.length();
-    if (length < 0.5) return;
-    dir.normalize();
-    const segments = Math.ceil(length / 2);
-    for (let i = 0; i < segments; i++) {
-      const t = i / segments;
-      const pos = new THREE.Vector3().lerpVectors(from, to, t);
-      pos.y = 0.1;
-      const seg = new THREE.Mesh(
-        new THREE.BoxGeometry(1.5 + Math.random() * 0.3, 0.05, 2.2),
-        new THREE.MeshLambertMaterial({
-          color: new THREE.Color(DIRT).offsetHSL(0, 0, (Math.random() - 0.5) * 0.05),
-        })
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1.2, 0.15), mat(WOOD));
+      post.position.set(x, 0.6, z);
+      post.castShadow = true;
+      this.scene.add(post);
+
+      // Rail orientation depends on side
+      const isNS = ft.side === 'north' || ft.side === 'south';
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(isNS ? 2.0 : 0.06, 0.06, isNS ? 0.06 : 2.0),
+        mat(WOOD_DARK)
       );
-      seg.position.copy(pos);
-      seg.rotation.y = Math.atan2(dir.x, dir.z);
-      seg.receiveShadow = true;
-      this.scene.add(seg);
+      rail.position.set(x, 0.9, z);
+      this.scene.add(rail);
+      const rail2 = new THREE.Mesh(
+        new THREE.BoxGeometry(isNS ? 2.0 : 0.06, 0.06, isNS ? 0.06 : 2.0),
+        mat(WOOD_DARK)
+      );
+      rail2.position.set(x, 0.5, z);
+      this.scene.add(rail2);
     }
   }
 
-  _createMainStreet(startZ, endZ) {
-    const length = Math.abs(endZ - startZ);
-    const segments = Math.ceil(length / 2);
-    for (let i = 0; i <= segments; i++) {
-      const z = startZ - (i / segments) * length;
-      const seg = new THREE.Mesh(
-        new THREE.BoxGeometry(STREET_W + 1, 0.06, 2.2),
-        new THREE.MeshLambertMaterial({
-          color: new THREE.Color(DIRT).offsetHSL(0, 0, (Math.random() - 0.5) * 0.04),
-        })
-      );
-      seg.position.set(0, 0.09, z);
-      seg.receiveShadow = true;
-      this.scene.add(seg);
-    }
-  }
+  _renderTrainTrack() {
+    const railMat = mat(0x808890);
+    const pillarMat = mat(0x707880);
 
-  // ══════════════════════════════════════════════════════════════════════════
-  //  DECORATIONS (trees, rocks)
-  // ══════════════════════════════════════════════════════════════════════════
+    // Elevated monorail — oval loop, radius from layout plan
+    const MONO_Y = 4.5;
+    const R = this.plan?.monoRadius || 58;
+    const trackPts = [
+      new THREE.Vector3(0, MONO_Y, -R),             // 0: South station (t=0)
+      new THREE.Vector3(R * 0.55, MONO_Y, -R * 0.55),
+      new THREE.Vector3(R, MONO_Y, 0),              // 2: East station (t≈0.25)
+      new THREE.Vector3(R * 0.55, MONO_Y, R * 0.55),
+      new THREE.Vector3(0, MONO_Y, R),              // 4: North station (t≈0.5)
+      new THREE.Vector3(-R * 0.55, MONO_Y, R * 0.55),
+      new THREE.Vector3(-R, MONO_Y, 0),             // 6: West station (t≈0.75)
+      new THREE.Vector3(-R * 0.55, MONO_Y, -R * 0.55),
+    ];
+    const trackCurve = new THREE.CatmullRomCurve3(trackPts, true, 'catmullrom', 0.4);
+    this.trainPath = trackCurve;
 
-  createDecorations() {
-    for (let i = 0; i < 30; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 25 + Math.random() * 60;
-      const x = Math.cos(angle) * dist;
-      const z = Math.sin(angle) * dist;
-      // Avoid rides, pond, and entrance path
-      const tooClose = this.rides.some(ride => {
-        const fp = RIDE_FOOTPRINTS[ride.type];
-        return Math.abs(ride.group.position.x - x) < (fp.width / 2 + 5) &&
-               Math.abs(ride.group.position.z - z) < (fp.depth / 2 + 5);
-      });
-      const nearPond = Math.sqrt((x - POND_X) ** 2 + (z - POND_Z) ** 2) < POND_R + 4;
-      const nearPath = Math.abs(x) < 4 && z > 0 && z < 25;
-      if (!tooClose && !nearPond && !nearPath) {
-        this.createTree(new THREE.Vector3(x, 0, z));
+    // Render elevated track: beam + support pillars
+    const numSegs = 200;
+    for (let i = 0; i < numSegs; i++) {
+      const t = i / numSegs;
+      const pos = trackCurve.getPointAt(t);
+      const tangent = trackCurve.getTangentAt(t).normalize();
+      const right = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
+
+      // Track beam (single wide rail for monorail)
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.2, 2.2), railMat);
+      beam.position.copy(pos);
+      beam.lookAt(pos.clone().add(tangent));
+      this.scene.add(beam);
+
+      // Support pillar every 6 segments (~every 7 world units)
+      if (i % 6 === 0) {
+        const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.4, MONO_Y, 0.4), pillarMat);
+        pillar.position.set(pos.x, MONO_Y / 2, pos.z);
+        pillar.castShadow = true;
+        this.scene.add(pillar);
       }
     }
 
-    for (let i = 0; i < 20; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = 15 + Math.random() * 65;
-      const x = Math.cos(angle) * dist;
-      const z = Math.sin(angle) * dist;
-      const nearPond = Math.sqrt((x - POND_X) ** 2 + (z - POND_Z) ** 2) < POND_R + 3;
-      if (!nearPond) this.createRock(new THREE.Vector3(x, 0, z));
+    // 4 stations
+    const stationNames = ['South', 'East', 'North', 'West'];
+    const stationTs = [0, 0.25, 0.5, 0.75];
+    // Inward direction for stairs (toward park center)
+    const stationInward = [
+      new THREE.Vector3(0, 0, 1),   // south → stairs go north (+Z)
+      new THREE.Vector3(-1, 0, 0),  // east → stairs go west (-X)
+      new THREE.Vector3(0, 0, -1),  // north → stairs go south (-Z)
+      new THREE.Vector3(1, 0, 0),   // west → stairs go east (+X)
+    ];
+
+    for (let s = 0; s < 4; s++) {
+      const sPos = trackCurve.getPointAt(stationTs[s]);
+
+      // Platform
+      const platform = new THREE.Mesh(new THREE.BoxGeometry(8, 0.35, 5), mat(0x9e8b6e));
+      platform.position.set(sPos.x, MONO_Y - 0.2, sPos.z);
+      platform.receiveShadow = true;
+      this.scene.add(platform);
+
+      // Shelter roof
+      const shelter = new THREE.Mesh(new THREE.BoxGeometry(7, 0.15, 4), mat(0xd03020));
+      shelter.position.set(sPos.x, MONO_Y + 2.5, sPos.z);
+      shelter.castShadow = true;
+      this.scene.add(shelter);
+
+      // Shelter posts
+      for (const [dx, dz] of [[-3, -1.5], [3, -1.5], [-3, 1.5], [3, 1.5]]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.15, 2.5, 0.15), mat(0x808890));
+        post.position.set(sPos.x + dx, MONO_Y + 1.2, sPos.z + dz);
+        this.scene.add(post);
+      }
+
+      // Staircase as a rotated group — build along +Z then rotate to face inward
+      const inward = stationInward[s];
+      const stairGroup = new THREE.Group();
+      const NUM_STEPS = 10;
+      const stepW = 1.8, stepD = 0.7, stepH = 0.15;
+      const stairSpacing = 0.8;
+
+      for (let step = 0; step < NUM_STEPS; step++) {
+        const t = step / (NUM_STEPS - 1);
+        const stepY = MONO_Y - 0.3 - t * (MONO_Y - 0.3);
+        const sz = 2.5 + step * stairSpacing;
+        const tread = new THREE.Mesh(new THREE.BoxGeometry(stepW, stepH, stepD), mat(0xc0b090));
+        tread.position.set(0, Math.max(0.1, stepY), sz);
+        tread.receiveShadow = true;
+        stairGroup.add(tread);
+      }
+
+      // Railings on both sides
+      for (const side of [-1, 1]) {
+        const rx = side * (stepW / 2 + 0.06);
+        // Top post (at platform)
+        const postTop = new THREE.Mesh(new THREE.BoxGeometry(0.1, MONO_Y + 0.5, 0.1), mat(0x808890));
+        postTop.position.set(rx, MONO_Y / 2, 2.5);
+        stairGroup.add(postTop);
+        // Bottom post (at ground)
+        const endZ = 2.5 + (NUM_STEPS - 1) * stairSpacing;
+        const postBot = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.2, 0.1), mat(0x808890));
+        postBot.position.set(rx, 0.6, endZ);
+        stairGroup.add(postBot);
+        // Diagonal handrail
+        const railLen = Math.sqrt((NUM_STEPS * stairSpacing) ** 2 + MONO_Y ** 2);
+        const railAngle = Math.atan2(MONO_Y, NUM_STEPS * stairSpacing);
+        const handrail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, railLen), mat(0x808890));
+        handrail.position.set(rx, MONO_Y / 2 + 0.4, 2.5 + (NUM_STEPS / 2) * stairSpacing);
+        handrail.rotation.x = railAngle;
+        stairGroup.add(handrail);
+      }
+
+      // Position at station and rotate to face inward direction
+      stairGroup.position.set(sPos.x, 0, sPos.z);
+      stairGroup.rotation.y = Math.atan2(inward.x, inward.z);
+      this.scene.add(stairGroup);
+
+      // Station name sign
+      const signTex = createTextTexture(stationNames[s] + ' Station', { fontSize: 28, width: 256, height: 48 });
+      const sign = new THREE.Mesh(
+        new THREE.PlaneGeometry(3, 0.5),
+        new THREE.MeshBasicMaterial({ map: signTex, transparent: true, depthTest: false })
+      );
+      sign.position.set(sPos.x, MONO_Y + 3.2, sPos.z);
+      sign.renderOrder = 999;
+      sign.userData.billboard = true;
+      this.uiScene.add(sign);
+      this.billboards.push(sign);
     }
   }
 
@@ -1101,11 +1165,6 @@ export class World {
       if (sphere) sphere.position.y = b.userData.baseY + Math.sin(t * 1.5 + i * 1.3) * 0.15;
     }
 
-    // Pond water ripple
-    if (this.pondWater) {
-      this.pondWater.position.y = -0.15 + Math.sin(t * 0.8) * 0.03;
-    }
-
     // Fountain water
     if (this.fountain) {
       this.fountain.basin.position.y = 0.72 + Math.sin(t * 2) * 0.02;
@@ -1130,7 +1189,9 @@ export class World {
       ferris_wheel: 14, roller_coaster: 7, carousel: 7, swing_ride: 8,
       spinning_cups: 4, drop_tower: 16, loop_coaster: 9, log_flume: 6,
       pirate_ship: 9, bumper_cars: 5, haunted_house: 9, go_karts: 3,
-      observation_tower: 15,
+      observation_tower: 15, mini_railway: 3, merry_go_round: 6,
+      top_spin: 10, river_rapids: 4, wild_mouse: 6, enterprise: 12,
+      ghost_train: 7,
     };
     return heights[type] || 6;
   }
@@ -1155,33 +1216,25 @@ export class World {
     ctx.fillStyle = '#48a830';
     ctx.fillRect(0, 0, w, h);
 
-    // Pond
-    ctx.fillStyle = '#3080c0';
-    ctx.beginPath();
-    ctx.ellipse(
-      w / 2 + POND_X * scale,
-      h / 2 - POND_Z * scale,
-      POND_R * scale,
-      POND_R * scale,
-      0, 0, Math.PI * 2
-    );
-    ctx.fill();
+    // Plaza (positioned from plan)
+    if (this.plan) {
+      const pc = this.plan.grid.tileToWorld(this.plan.plazaCenter.col, this.plan.plazaCenter.row);
+      ctx.fillStyle = '#c8a868';
+      ctx.beginPath();
+      ctx.arc(w / 2 + pc.x * scale, h / 2 - pc.z * scale, 8 * scale, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
-    // Plaza
-    ctx.fillStyle = '#c8a868';
-    ctx.beginPath();
-    ctx.arc(w / 2, h / 2, 8 * scale, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Main street
-    ctx.fillStyle = '#c8a868';
-    const streetTopY = h / 2 - (STREET_START_Z + 4) * scale;
-    const streetBotY = h / 2 - (this.streetExtentZ || -50) * scale;
-    ctx.fillRect(w / 2 - 3, streetTopY, 6, streetBotY - streetTopY);
-
-    // Parking lot
-    ctx.fillStyle = '#505050';
-    ctx.fillRect(w / 2 - 8, h / 2 - 22 * scale, 16, 10 * scale);
+    // Paths and roads from tile grid
+    if (this.plan) {
+      for (const pt of this.plan.pathTiles) {
+        const tw = this.plan.grid.tileToWorld(pt.col, pt.row);
+        const px = w / 2 + tw.x * scale;
+        const py = h / 2 - tw.z * scale;
+        ctx.fillStyle = pt.type === T.ROAD ? '#505050' : '#c8a868';
+        ctx.fillRect(px - 1, py - 1, 2, 2);
+      }
+    }
 
     // Rides
     const rideColors = {
@@ -1218,8 +1271,8 @@ export class World {
     ctx.fillStyle = '#e03030';
     ctx.fillRect(w / 2 + camera.position.x * scale - 2, h / 2 - camera.position.z * scale - 2, 4, 4);
 
-    // Entrance
+    // Entrance marker at gate position
     ctx.fillStyle = '#f0d830';
-    ctx.fillRect(w / 2 - 2, h / 2 - 9 * scale - 1, 4, 3);
+    ctx.fillRect(w / 2 - 2, h / 2 + 68 * scale - 1, 4, 3);
   }
 }

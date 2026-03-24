@@ -19,22 +19,50 @@ function mat(color) {
   return new THREE.MeshLambertMaterial({ color, flatShading: true });
 }
 
+// Circus-tent striped cone: vertex-colored geometry with alternating segment colors
+function circusTentCone(radius, height, numStripes, color1, color2) {
+  const segments = numStripes * 2;
+  const geo = new THREE.ConeGeometry(radius, height, segments);
+  const colors = new Float32Array(geo.attributes.position.count * 3);
+  const c1 = new THREE.Color(color1);
+  const c2 = new THREE.Color(color2);
+
+  // ConeGeometry layout: tip vertex repeated per segment, then base center,
+  // then ring vertices. Each side face uses 3 consecutive verts (triangle).
+  // Faces are grouped by segment index.
+  const posAttr = geo.attributes.position;
+  for (let i = 0; i < posAttr.count; i++) {
+    // Determine which segment this vertex belongs to via its angle
+    const x = posAttr.getX(i);
+    const z = posAttr.getZ(i);
+    const y = posAttr.getY(i);
+    let segIdx = 0;
+    if (Math.abs(x) < 0.001 && Math.abs(z) < 0.001) {
+      // Tip or base center — will be colored by neighboring faces
+      // Use segment 0 color (will blend)
+      segIdx = 0;
+    } else {
+      const angle = (Math.atan2(z, x) + Math.PI) / (Math.PI * 2);
+      segIdx = Math.floor(angle * segments) % segments;
+    }
+    const c = segIdx % 2 === 0 ? c1 : c2;
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const meshMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  return new THREE.Mesh(geo, meshMat);
+}
+
 // ── Ride catalogue ────────────────────────────────────────────────────────────
 
 export const RIDE_TYPES = [
-  'ferris_wheel',
-  'roller_coaster',
-  'carousel',
-  'swing_ride',
-  'spinning_cups',
-  'drop_tower',
-  'loop_coaster',
-  'log_flume',
-  'pirate_ship',
-  'bumper_cars',
-  'haunted_house',
-  'go_karts',
-  'observation_tower',
+  'ferris_wheel', 'roller_coaster', 'carousel', 'swing_ride', 'spinning_cups',
+  'drop_tower', 'loop_coaster', 'log_flume', 'pirate_ship', 'bumper_cars',
+  'haunted_house', 'go_karts', 'observation_tower',
+  'mini_railway', 'merry_go_round', 'top_spin', 'river_rapids',
+  'wild_mouse', 'enterprise', 'ghost_train',
 ];
 
 export const RIDE_FOOTPRINTS = {
@@ -51,6 +79,36 @@ export const RIDE_FOOTPRINTS = {
   haunted_house:     { width: 10, depth: 8 },
   go_karts:          { width: 14, depth: 10 },
   observation_tower: { width: 6,  depth: 6 },
+  mini_railway:      { width: 20, depth: 4 },
+  merry_go_round:    { width: 6,  depth: 6 },
+  top_spin:          { width: 10, depth: 8 },
+  river_rapids:      { width: 16, depth: 16 },
+  wild_mouse:        { width: 12, depth: 10 },
+  enterprise:        { width: 10, depth: 10 },
+  ghost_train:       { width: 12, depth: 8 },
+};
+
+export const RIDE_CATALOG = {
+  ferris_wheel:      { tilesW: 6, tilesD: 4, entrance: { col: 3, row: 4, facing: 'south' } },
+  roller_coaster:    { tilesW: 7, tilesD: 6, entrance: { col: 3, row: 6, facing: 'south' } },
+  carousel:          { tilesW: 5, tilesD: 5, entrance: { col: 2, row: 5, facing: 'south' } },
+  swing_ride:        { tilesW: 5, tilesD: 5, entrance: { col: 2, row: 5, facing: 'south' } },
+  spinning_cups:     { tilesW: 5, tilesD: 5, entrance: { col: 2, row: 5, facing: 'south' } },
+  drop_tower:        { tilesW: 3, tilesD: 3, entrance: { col: 1, row: 3, facing: 'south' } },
+  loop_coaster:      { tilesW: 7, tilesD: 5, entrance: { col: 3, row: 5, facing: 'south' } },
+  log_flume:         { tilesW: 8, tilesD: 5, entrance: { col: 4, row: 5, facing: 'south' } },
+  pirate_ship:       { tilesW: 6, tilesD: 4, entrance: { col: 3, row: 4, facing: 'south' } },
+  bumper_cars:       { tilesW: 6, tilesD: 5, entrance: { col: 3, row: 5, facing: 'south' } },
+  haunted_house:     { tilesW: 6, tilesD: 5, entrance: { col: 3, row: 5, facing: 'south' } },
+  go_karts:          { tilesW: 8, tilesD: 6, entrance: { col: 4, row: 6, facing: 'south' } },
+  observation_tower: { tilesW: 4, tilesD: 4, entrance: { col: 2, row: 4, facing: 'south' } },
+  mini_railway:      { tilesW: 10, tilesD: 3, entrance: { col: 5, row: 3, facing: 'south' } },
+  merry_go_round:    { tilesW: 4, tilesD: 4, entrance: { col: 2, row: 4, facing: 'south' } },
+  top_spin:          { tilesW: 6, tilesD: 5, entrance: { col: 3, row: 5, facing: 'south' } },
+  river_rapids:      { tilesW: 9, tilesD: 9, entrance: { col: 4, row: 9, facing: 'south' } },
+  wild_mouse:        { tilesW: 7, tilesD: 6, entrance: { col: 3, row: 6, facing: 'south' } },
+  enterprise:        { tilesW: 6, tilesD: 6, entrance: { col: 3, row: 6, facing: 'south' } },
+  ghost_train:       { tilesW: 7, tilesD: 5, entrance: { col: 3, row: 5, facing: 'south' } },
 };
 
 // ── Ride class ────────────────────────────────────────────────────────────────
@@ -66,9 +124,12 @@ export class Ride {
     this.seats = [];           // { group, occupied, character }
     this.animatedParts = {};
     this.entrancePosition = new THREE.Vector3();
+    this.exitPosition = null;      // set by world.js from plan
+    this.queuePositions = null;    // array of Vector3, set by world.js
     this.rideNodeId = null;
 
     this._build();
+    this._addVisualDetails();
   }
 
   // ── dispatch ──
@@ -88,6 +149,13 @@ export class Ride {
       haunted_house:     () => this._buildHauntedHouse(),
       go_karts:          () => this._buildGoKarts(),
       observation_tower: () => this._buildObservationTower(),
+      mini_railway:      () => this._buildMiniRailway(),
+      merry_go_round:    () => this._buildMerryGoRound(),
+      top_spin:          () => this._buildTopSpin(),
+      river_rapids:      () => this._buildRiverRapids(),
+      wild_mouse:        () => this._buildWildMouse(),
+      enterprise:        () => this._buildEnterprise(),
+      ghost_train:       () => this._buildGhostTrain(),
     };
     (fn[this.type] || fn.carousel)();
   }
@@ -108,6 +176,13 @@ export class Ride {
       haunted_house:     () => this._updateHauntedHouse(delta),
       go_karts:          () => this._updateGoKarts(delta),
       observation_tower: () => this._updateObservationTower(delta),
+      mini_railway:      () => this._updateMiniRailway(delta),
+      merry_go_round:    () => this._updateMerryGoRound(delta),
+      top_spin:          () => this._updateTopSpin(delta),
+      river_rapids:      () => this._updateRiverRapids(delta),
+      wild_mouse:        () => this._updateWildMouse(delta),
+      enterprise:        () => this._updateEnterprise(delta),
+      ghost_train:       () => this._updateGhostTrain(delta),
     };
     (fn[this.type] || fn.carousel)();
   }
@@ -133,7 +208,7 @@ export class Ride {
     seat.occupied = false;
     seat.character = null;
     seat.group.remove(character.group);
-    character.group.position.copy(this.entrancePosition);
+    character.group.position.copy(this.exitPosition || this.entrancePosition);
     character.group.rotation.set(0, 0, 0);
     this.scene.add(character.group);
   }
@@ -220,7 +295,7 @@ export class Ride {
     for (let i = 0; i < 24; i++) {
       const a = (i / 24) * Math.PI * 2;
       const a2 = ((i + 1) / 24) * Math.PI * 2;
-      const seg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 1.4), metalMat);
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.1, 0.1), metalMat);
       seg.position.set(
         Math.cos(a) * wheelR,
         Math.sin(a) * wheelR,
@@ -255,10 +330,14 @@ export class Ride {
   _updateFerrisWheel() {
     const wheel = this.animatedParts.wheel;
     if (!wheel) return;
-    wheel.rotation.z -= 0.0015; // very slow continuous rotation
-    // Counter-rotate gondolas to keep them upright
-    for (const c of this.animatedParts.gondolaContainers) {
-      c.rotation.z = -wheel.rotation.z;
+    // Slow rotation with slight speed variation (wind effect)
+    const windSpeed = 0.0015 + Math.sin(this.animTime * 0.3) * 0.0003;
+    wheel.rotation.z -= windSpeed;
+    // Counter-rotate gondolas + gentle sway
+    for (let i = 0; i < this.animatedParts.gondolaContainers.length; i++) {
+      const c = this.animatedParts.gondolaContainers[i];
+      c.rotation.z = -wheel.rotation.z + Math.sin(this.animTime * 1.5 + i * 0.8) * 0.04;
+      c.rotation.x = Math.sin(this.animTime * 0.8 + i) * 0.06; // gentle rocking
     }
   }
 
@@ -345,41 +424,72 @@ export class Ride {
       g.add(sup);
     }
 
-    // Car (moves along track)
-    const carGroup = new THREE.Group();
-    const carBody = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 1.6), mat(R_YELLOW));
-    carBody.position.y = 0.6;
-    carBody.castShadow = true;
-    carGroup.add(carBody);
+    // Train of 5 cars chained along the track
+    const NUM_CARS = 5;
+    const CAR_SPACING = 0.025; // parameter offset between cars
+    const carColors = [R_YELLOW, R_RED, R_BLUE, R_GREEN, R_ORANGE];
+    const carGroups = [];
 
-    // Car front
-    const carFront = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.4, 0.3), mat(R_RED));
-    carFront.position.set(0, 0.8, 0.9);
-    carGroup.add(carFront);
+    for (let c = 0; c < NUM_CARS; c++) {
+      const car = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.7, 1.3), mat(carColors[c % carColors.length]));
+      body.position.y = 0.55;
+      body.castShadow = true;
+      car.add(body);
 
-    const startPos = curve.getPointAt(0);
-    carGroup.position.copy(startPos);
-    g.add(carGroup);
+      // Front bumper on lead car only
+      if (c === 0) {
+        const front = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.25), mat(R_RED));
+        front.position.set(0, 0.7, 0.75);
+        car.add(front);
+      }
 
-    this.animatedParts.carGroup = carGroup;
+      // Connector between cars (except first)
+      if (c > 0) {
+        const conn = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.5), mat(R_METAL));
+        conn.position.set(0, 0.4, 0.8);
+        car.add(conn);
+      }
+
+      const t = (c * CAR_SPACING) % 1;
+      car.position.copy(curve.getPointAt(t));
+      g.add(car);
+      carGroups.push(car);
+      this.seats.push({ group: car, occupied: false, character: null });
+    }
+
+    this.animatedParts.carGroups = carGroups;
     this.animatedParts.carT = 0;
-    this.seats.push({ group: carGroup, occupied: false, character: null });
-    // Second seat in same car
-    this.seats.push({ group: carGroup, occupied: false, character: null });
+    this.animatedParts.carSpacing = CAR_SPACING;
   }
 
   _updateRollerCoaster(delta) {
-    const { curve, carGroup } = this.animatedParts;
-    if (!curve || !carGroup) return;
+    const { curve, carGroups, carSpacing } = this.animatedParts;
+    if (!curve || !carGroups) return;
 
-    // Advance car along track
-    this.animatedParts.carT = (this.animatedParts.carT + delta * 0.06) % 1;
+    // Speed varies with height — faster on downhills
+    const leadPos = curve.getPointAt(this.animatedParts.carT);
+    const nextCheck = curve.getPointAt((this.animatedParts.carT + 0.02) % 1);
+    const slope = nextCheck.y - leadPos.y;
+    const baseSpeed = 0.06;
+    const speed = baseSpeed + Math.max(0, -slope * 0.08); // faster going down
+
+    this.animatedParts.carT = (this.animatedParts.carT + delta * speed) % 1;
     const t = this.animatedParts.carT;
 
-    const pos = curve.getPointAt(t);
-    const nextPos = curve.getPointAt((t + 0.01) % 1);
-    carGroup.position.copy(pos);
-    carGroup.lookAt(nextPos);
+    for (let i = 0; i < carGroups.length; i++) {
+      const carT = (t - i * carSpacing + 1) % 1;
+      const pos = curve.getPointAt(carT);
+      const nextPos = curve.getPointAt((carT + 0.01) % 1);
+      carGroups[i].position.copy(pos);
+      const worldNext = this.group.localToWorld(nextPos.clone());
+      carGroups[i].lookAt(worldNext);
+      // Bank into turns
+      const tangent = curve.getTangentAt(carT);
+      const nextTangent = curve.getTangentAt((carT + 0.02) % 1);
+      const turn = tangent.x * nextTangent.z - tangent.z * nextTangent.x;
+      carGroups[i].rotation.z = Math.max(-0.2, Math.min(0.2, -turn * 3));
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -415,15 +525,13 @@ export class Ride {
     pole.castShadow = true;
     spinner.add(pole);
 
-    // Conical roof (striped effect via two cones)
-    const roofMat1 = mat(R_RED);
-    const roofMat2 = mat(R_WHITE);
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(platformR + 0.8, 1.8, 12), roofMat1);
+    // Conical roof with circus-tent stripes
+    const roof = circusTentCone(platformR + 0.8, 1.8, 8, R_RED, R_WHITE);
     roof.position.y = 5.1;
     roof.castShadow = true;
     spinner.add(roof);
     // Roof trim ring
-    const trim = new THREE.Mesh(new THREE.CylinderGeometry(platformR + 0.9, platformR + 0.9, 0.15, 12), roofMat2);
+    const trim = new THREE.Mesh(new THREE.CylinderGeometry(platformR + 0.9, platformR + 0.9, 0.15, 24), mat(R_WHITE));
     trim.position.y = 4.2;
     spinner.add(trim);
     // Finial
@@ -446,7 +554,7 @@ export class Ride {
       // Horse seat group (for guest attachment)
       const seatGroup = new THREE.Group();
       seatGroup.position.set(hx, 1.2, hz);
-      seatGroup.rotation.y = -angle + Math.PI / 2;
+      seatGroup.rotation.y = -angle;
 
       // Horse body (box)
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 1.2), mat(color));
@@ -489,18 +597,19 @@ export class Ride {
   _updateCarousel() {
     const { spinner, numHorses, platformR } = this.animatedParts;
     if (!spinner) return;
-    spinner.rotation.y += 0.008;
+    // Speed oscillates — speeds up then slows (like a real carousel cycle)
+    const speedCycle = 0.008 + Math.sin(this.animTime * 0.2) * 0.003;
+    spinner.rotation.y += speedCycle;
 
-    // Bob horses up/down (each at a different phase)
+    // Bob horses up/down with galloping motion
     const horseGroups = this.seats;
     for (let i = 0; i < horseGroups.length; i++) {
       if (this.type !== 'carousel') continue;
       const seat = horseGroups[i].group;
-      const angle = (i / numHorses) * Math.PI * 2;
-      const hx = Math.cos(angle + spinner.rotation.y) * (platformR - 0.8);
-      const hz = Math.sin(angle + spinner.rotation.y) * (platformR - 0.8);
-      // Gentle bob
-      seat.position.y = 1.2 + Math.sin(this.animTime * 2 + i * 1.2) * 0.3;
+      // Galloping bob with slight forward tilt
+      const bobPhase = this.animTime * 2.5 + i * 1.2;
+      seat.position.y = 1.2 + Math.sin(bobPhase) * 0.35;
+      seat.rotation.x = Math.sin(bobPhase) * 0.08; // slight tilt forward/back
     }
   }
 
@@ -529,8 +638,8 @@ export class Ride {
     disc.castShadow = true;
     topGroup.add(disc);
 
-    // Conical canopy
-    const canopy = new THREE.Mesh(new THREE.ConeGeometry(discR + 0.5, 1.2, 10), mat(R_RED));
+    // Conical canopy with circus-tent stripes
+    const canopy = circusTentCone(discR + 0.5, 1.2, 6, R_RED, R_WHITE);
     canopy.position.y = 0.8;
     canopy.castShadow = true;
     topGroup.add(canopy);
@@ -587,13 +696,15 @@ export class Ride {
   _updateSwingRide() {
     const { topGroup } = this.animatedParts;
     if (!topGroup) return;
-    topGroup.rotation.y += 0.012;
 
-    // Angle chains outward based on spin speed
-    const swingAngle = 0.35; // fixed tilt outward
+    // Speed builds up then slows down in cycles
+    const speedCycle = 0.012 + Math.sin(this.animTime * 0.15) * 0.006;
+    topGroup.rotation.y += speedCycle;
+
+    // Swing angle increases with speed (centrifugal effect)
+    const swingAngle = 0.25 + (speedCycle / 0.018) * 0.2;
     for (const seat of this.seats) {
       if (!seat.pivot) continue;
-      // Tilt chain outward from center
       const angle = Math.atan2(seat.pivot.position.z, seat.pivot.position.x);
       seat.pivot.rotation.x = Math.sin(angle + topGroup.rotation.y + Math.PI / 2) * swingAngle;
       seat.pivot.rotation.z = -Math.cos(angle + topGroup.rotation.y + Math.PI / 2) * swingAngle;
@@ -702,12 +813,16 @@ export class Ride {
   _updateSpinningCups() {
     const { spinner, cupGroups } = this.animatedParts;
     if (!spinner) return;
-    spinner.rotation.y += 0.006;
+    // Platform speed pulses
+    spinner.rotation.y += 0.006 + Math.sin(this.animTime * 0.4) * 0.003;
 
-    // Each cup also rotates individually
+    // Each cup spins with variable bursts (like guests spinning the wheel)
     if (cupGroups) {
       for (let i = 0; i < cupGroups.length; i++) {
-        cupGroups[i].rotation.y -= 0.02 + i * 0.003;
+        const burst = Math.sin(this.animTime * 1.5 + i * 2.5);
+        cupGroups[i].rotation.y -= 0.015 + burst * 0.015 + i * 0.003;
+        // Slight wobble
+        cupGroups[i].rotation.x = Math.sin(this.animTime * 2 + i) * 0.03;
       }
     }
   }
@@ -910,11 +1025,19 @@ export class Ride {
   _updateLoopCoaster(delta) {
     const { curve, carGroup } = this.animatedParts;
     if (!curve || !carGroup) return;
-    this.animatedParts.carT = (this.animatedParts.carT + delta * 0.07) % 1;
+
+    // Speed varies with height — faster on drops, slower climbing the loop
+    const curPos = curve.getPointAt(this.animatedParts.carT);
+    const aheadPos = curve.getPointAt((this.animatedParts.carT + 0.02) % 1);
+    const slope = aheadPos.y - curPos.y;
+    const speed = 0.07 + Math.max(0, -slope * 0.08);
+
+    this.animatedParts.carT = (this.animatedParts.carT + delta * speed) % 1;
     const pos = curve.getPointAt(this.animatedParts.carT);
     const nextPos = curve.getPointAt((this.animatedParts.carT + 0.01) % 1);
     carGroup.position.copy(pos);
-    carGroup.lookAt(nextPos);
+    const worldNext = this.group.localToWorld(nextPos.clone());
+    carGroup.lookAt(worldNext);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1021,16 +1144,27 @@ export class Ride {
     const { curve, logGroup, splashes } = this.animatedParts;
     if (!curve || !logGroup) return;
 
-    this.animatedParts.logT = (this.animatedParts.logT + delta * 0.04) % 1;
+    // Speed varies with slope — faster on drops, slower climbing
+    const curPos = curve.getPointAt(this.animatedParts.logT);
+    const aheadPos = curve.getPointAt((this.animatedParts.logT + 0.02) % 1);
+    const slope = aheadPos.y - curPos.y;
+    const speed = 0.04 + Math.max(0, -slope * 0.1); // faster going down
+
+    this.animatedParts.logT = (this.animatedParts.logT + delta * speed) % 1;
     const pos = curve.getPointAt(this.animatedParts.logT);
     const nextPos = curve.getPointAt((this.animatedParts.logT + 0.01) % 1);
     logGroup.position.copy(pos);
-    logGroup.lookAt(nextPos);
+    const worldNext = this.group.localToWorld(nextPos.clone());
+    logGroup.lookAt(worldNext);
 
-    // Animate splash particles
+    // Tilt forward/back on slopes
+    logGroup.rotation.x = slope * 0.5;
+
+    // Animate splash particles (bigger splashes at high speed)
     if (splashes) {
+      const splashIntensity = speed > 0.06 ? 1.5 : 1;
       for (const s of splashes) {
-        s.position.y = s.userData.splashBase + Math.sin(this.animTime * 3 + s.position.x * 5) * 0.3;
+        s.position.y = s.userData.splashBase + Math.sin(this.animTime * 3 + s.position.x * 5) * 0.3 * splashIntensity;
         s.material.opacity = 0.5 + Math.sin(this.animTime * 2 + s.position.z) * 0.3;
       }
     }
@@ -1044,8 +1178,8 @@ export class Ride {
     const g = this.group;
     const metalMat = mat(R_METAL);
 
-    // A-frame supports
-    for (const zOff of [-2, 2]) {
+    // A-frame supports — spread wide so hull clears them during swing
+    for (const zOff of [-3, 3]) {
       for (const xSign of [-1, 1]) {
         const leg = new THREE.Mesh(new THREE.BoxGeometry(0.35, 6, 0.35), metalMat);
         leg.position.set(xSign * 1.5, 3, zOff);
@@ -1059,7 +1193,7 @@ export class Ride {
     }
 
     // Axle
-    const axle = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 5), metalMat);
+    const axle = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 7), metalMat);
     axle.position.set(0, 6, 0);
     g.add(axle);
 
@@ -1131,9 +1265,14 @@ export class Ride {
   _updatePirateShip() {
     const { shipPivot } = this.animatedParts;
     if (!shipPivot) return;
-    // Pendulum swing — max angle varies with a slow breath
-    const maxAngle = 0.6 + Math.sin(this.animTime * 0.15) * 0.15;
-    shipPivot.rotation.z = Math.sin(this.animTime * 0.8) * maxAngle;
+    // Pendulum swing — builds up to full swing then eases back (20s cycle)
+    const cycle = (this.animTime * 0.05) % 1; // 0→1 over ~20s
+    const envelope = cycle < 0.6
+      ? Math.min(1, cycle / 0.3)   // ramp up over first 30%
+      : Math.max(0.3, 1 - (cycle - 0.6) / 0.4); // ease back
+    const maxAngle = 0.3 + envelope * 0.55;
+    const swing = Math.sin(this.animTime * 0.8) * maxAngle;
+    shipPivot.rotation.z = swing;
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1439,12 +1578,35 @@ export class Ride {
     const { curve, kartGroups, kartTs } = this.animatedParts;
     if (!curve || !kartGroups) return;
 
+    // Initialize per-kart speed variation if not set
+    if (!this.animatedParts.kartSpeeds) {
+      this.animatedParts.kartSpeeds = kartGroups.map(() => 0.06 + Math.random() * 0.02);
+      this.animatedParts.kartSpeedTimers = kartGroups.map(() => Math.random() * 5);
+    }
+    const { kartSpeeds, kartSpeedTimers } = this.animatedParts;
+
     for (let i = 0; i < kartGroups.length; i++) {
-      kartTs[i] = (kartTs[i] + delta * (0.06 + i * 0.008)) % 1;
+      // Simulate racing — speed fluctuates (bursts and coasting)
+      kartSpeedTimers[i] -= delta;
+      if (kartSpeedTimers[i] <= 0) {
+        kartSpeeds[i] = 0.04 + Math.random() * 0.05; // speed burst or coast
+        kartSpeedTimers[i] = 1 + Math.random() * 3;   // change again in 1-4s
+      }
+
+      kartTs[i] = (kartTs[i] + delta * kartSpeeds[i]) % 1;
       const pos = curve.getPointAt(kartTs[i]);
       const nextPos = curve.getPointAt((kartTs[i] + 0.01) % 1);
       kartGroups[i].position.copy(pos);
-      kartGroups[i].lookAt(nextPos);
+      // Fix: use world-space lookAt so karts turn with the track
+      const worldNext = this.group.localToWorld(nextPos.clone());
+      kartGroups[i].lookAt(worldNext);
+
+      // Keep karts level (no pitch from lookAt), slight lean into turns
+      kartGroups[i].rotation.x = 0; // prevent nose-diving
+      const tangent = curve.getTangentAt(kartTs[i]);
+      const nextTangent = curve.getTangentAt((kartTs[i] + 0.02) % 1);
+      const turnRate = tangent.x * nextTangent.z - tangent.z * nextTangent.x;
+      kartGroups[i].rotation.z = Math.max(-0.15, Math.min(0.15, -turnRate * 2)); // clamped lean
     }
   }
 
@@ -1524,10 +1686,742 @@ export class Ride {
   _updateObservationTower() {
     const { cabin, towerH } = this.animatedParts;
     if (!cabin) return;
-    // Gentle rotation
     cabin.rotation.y += 0.004;
-    // Slow rise and lower
-    const cycle = Math.sin(this.animTime * 0.2) * 0.5 + 0.5; // 0 to 1
+    const cycle = Math.sin(this.animTime * 0.2) * 0.5 + 0.5;
     cabin.position.y = towerH * 0.4 + cycle * (towerH * 0.4);
+    // Beacon pulse
+    if (this.animatedParts.beacon) {
+      const pulse = 0.8 + Math.sin(this.animTime * 3) * 0.4;
+      this.animatedParts.beacon.scale.setScalar(pulse);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  MINI RAILWAY — small looping track with a train
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildMiniRailway() {
+    const g = this.group;
+    const pts = [
+      new THREE.Vector3(-7, 0.3, 0), new THREE.Vector3(-5, 0.3, 1.5),
+      new THREE.Vector3(0, 0.3, 1.5), new THREE.Vector3(5, 0.3, 1.5),
+      new THREE.Vector3(7, 0.3, 0), new THREE.Vector3(5, 0.3, -1.5),
+      new THREE.Vector3(0, 0.3, -1.5), new THREE.Vector3(-5, 0.3, -1.5),
+    ];
+    const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5);
+    this.animatedParts.curve = curve;
+    // Track
+    for (let i = 0; i < 40; i++) {
+      const t = i / 40;
+      const pos = curve.getPointAt(t);
+      const tan = curve.getTangentAt(t).normalize();
+      const tie = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.06, 0.2), mat(R_WOOD));
+      tie.position.copy(pos); tie.lookAt(pos.clone().add(tan)); g.add(tie);
+    }
+    // Train cars
+    const trainColors = [R_RED, R_BLUE, R_GREEN, R_YELLOW];
+    const cars = [];
+    for (let c = 0; c < 4; c++) {
+      const car = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 1.2), mat(trainColors[c]));
+      body.position.y = 0.4; body.castShadow = true; car.add(body);
+      const roof = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 1.0), mat(trainColors[c]));
+      roof.position.y = 0.75; car.add(roof);
+      g.add(car); cars.push(car);
+      this.seats.push({ group: car, occupied: false, character: null });
+      this.seats.push({ group: car, occupied: false, character: null });
+    }
+    this.animatedParts.cars = cars;
+    this.animatedParts.trainT = 0;
+    const base = new THREE.Mesh(new THREE.BoxGeometry(16, 0.15, 5), mat(0x9e8b6e));
+    base.position.y = 0.07; base.receiveShadow = true; g.add(base);
+  }
+  _updateMiniRailway(delta) {
+    const { curve, cars } = this.animatedParts;
+    if (!curve || !cars) return;
+    this.animatedParts.trainT = (this.animatedParts.trainT + delta * 0.03) % 1;
+    for (let i = 0; i < cars.length; i++) {
+      const t = (this.animatedParts.trainT - i * 0.06 + 1) % 1;
+      const pos = curve.getPointAt(t);
+      const next = curve.getPointAt((t + 0.01) % 1);
+      cars[i].position.copy(pos);
+      const wn = this.group.localToWorld(next.clone());
+      cars[i].lookAt(wn);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  MERRY-GO-ROUND — gentle spinning platform with horses
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildMerryGoRound() {
+    const g = this.group;
+    const R = 2.5, numH = 8;
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(R + 0.3, R + 0.3, 0.2, 12), mat(0x9e8b6e));
+    base.position.y = 0.1; base.receiveShadow = true; g.add(base);
+    const spinner = new THREE.Group();
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 0.15, 12), mat(R_YELLOW));
+    disc.position.y = 0.3; spinner.add(disc);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 3.5, 6), mat(R_RED));
+    pole.position.y = 2; spinner.add(pole);
+    const roof = circusTentCone(R + 0.5, 1.5, 8, R_RED, R_WHITE);
+    roof.position.y = 4; spinner.add(roof);
+    for (let i = 0; i < numH; i++) {
+      const a = (i / numH) * Math.PI * 2;
+      const hx = Math.cos(a) * (R - 0.5), hz = Math.sin(a) * (R - 0.5);
+      const hp = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 2.5, 4), mat(R_METAL));
+      hp.position.set(hx, 1.5, hz); spinner.add(hp);
+      const sg = new THREE.Group();
+      sg.position.set(hx, 1, hz); sg.rotation.y = -a;
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, 0.9), mat(SEAT_COLORS[i % SEAT_COLORS.length]));
+      body.castShadow = true; sg.add(body);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.35, 0.3), mat(SEAT_COLORS[i % SEAT_COLORS.length]));
+      head.position.set(0, 0.25, 0.45); sg.add(head);
+      spinner.add(sg);
+      this.seats.push({ group: sg, occupied: false, character: null });
+    }
+    g.add(spinner);
+    this.animatedParts.spinner = spinner;
+    this.animatedParts.numH = numH;
+  }
+  _updateMerryGoRound() {
+    const { spinner, numH } = this.animatedParts;
+    if (!spinner) return;
+    spinner.rotation.y += 0.006;
+    for (let i = 0; i < this.seats.length; i++) {
+      if (this.type !== 'merry_go_round') continue;
+      this.seats[i].group.position.y = 1 + Math.sin(this.animTime * 1.8 + i * 0.9) * 0.2;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  TOP SPIN — pendulum + rotating gondola
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildTopSpin() {
+    const g = this.group;
+    const metalMat = mat(R_METAL);
+    for (const zOff of [-3, 3]) {
+      for (const xSign of [-1, 1]) {
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.4, 7, 0.4), metalMat);
+        leg.position.set(xSign * 2, 3.5, zOff); leg.rotation.z = -xSign * 0.1; leg.castShadow = true; g.add(leg);
+      }
+      const cross = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.3, 0.3), metalMat);
+      cross.position.set(0, 7.2, zOff); g.add(cross);
+    }
+    const axle = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 7), metalMat);
+    axle.position.set(0, 7, 0); g.add(axle);
+    const armPivot = new THREE.Group();
+    armPivot.position.set(0, 7, 0);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.25, 5, 0.25), metalMat);
+    arm.position.y = -2.5; armPivot.add(arm);
+    const gondola = new THREE.Group();
+    gondola.position.y = -5;
+    const gondolaBody = new THREE.Mesh(new THREE.BoxGeometry(4, 0.8, 2), mat(R_ORANGE));
+    gondolaBody.castShadow = true; gondola.add(gondolaBody);
+    for (let i = 0; i < 8; i++) {
+      const sg = new THREE.Group();
+      sg.position.set((i - 3.5) * 0.5, -0.2, (i % 2 === 0) ? 0.5 : -0.5);
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.6, 0.3), mat(SEAT_COLORS[i % SEAT_COLORS.length]));
+      seat.castShadow = true; sg.add(seat);
+      gondola.add(sg);
+      this.seats.push({ group: sg, occupied: false, character: null });
+    }
+    armPivot.add(gondola);
+    g.add(armPivot);
+    this.animatedParts.armPivot = armPivot;
+    this.animatedParts.gondola = gondola;
+    const base = new THREE.Mesh(new THREE.BoxGeometry(8, 0.25, 7), mat(0x9e8b6e));
+    base.position.y = 0.12; base.receiveShadow = true; g.add(base);
+  }
+  _updateTopSpin(delta) {
+    const { armPivot, gondola } = this.animatedParts;
+    if (!armPivot) return;
+    const swing = Math.sin(this.animTime * 0.6) * (0.8 + Math.sin(this.animTime * 0.1) * 0.4);
+    armPivot.rotation.z = swing;
+    gondola.rotation.z = -swing + Math.sin(this.animTime * 1.2) * 0.5;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  RIVER RAPIDS — circular raft on water channel
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildRiverRapids() {
+    const g = this.group;
+    const waterMat = mat(0x3080c0);
+    const pts = [
+      new THREE.Vector3(0, 0.3, 6), new THREE.Vector3(5, 0.3, 5),
+      new THREE.Vector3(7, 0.3, 0), new THREE.Vector3(5, 0.3, -5),
+      new THREE.Vector3(0, 0.3, -6), new THREE.Vector3(-5, 0.3, -5),
+      new THREE.Vector3(-7, 0.3, 0), new THREE.Vector3(-5, 0.3, 5),
+    ];
+    const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.5);
+    this.animatedParts.curve = curve;
+    for (let i = 0; i < 50; i++) {
+      const t = i / 50;
+      const pos = curve.getPointAt(t);
+      const tan = curve.getTangentAt(t).normalize();
+      const water = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.06, 1.5), waterMat);
+      water.position.copy(pos); water.position.y -= 0.1; water.lookAt(pos.clone().add(tan)); g.add(water);
+      for (const xOff of [-1.3, 1.3]) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.5, 1.5), mat(0x808080));
+        const right = new THREE.Vector3().crossVectors(tan, new THREE.Vector3(0, 1, 0)).normalize();
+        wall.position.copy(pos).add(right.multiplyScalar(xOff)); wall.lookAt(wall.position.clone().add(tan)); g.add(wall);
+      }
+    }
+    const raft = new THREE.Group();
+    const raftBody = new THREE.Mesh(new THREE.CylinderGeometry(1, 1.1, 0.4, 8), mat(R_YELLOW));
+    raftBody.position.y = 0.2; raftBody.castShadow = true; raft.add(raftBody);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      const sg = new THREE.Group();
+      sg.position.set(Math.cos(a) * 0.5, 0.3, Math.sin(a) * 0.5);
+      raft.add(sg);
+      this.seats.push({ group: sg, occupied: false, character: null });
+    }
+    raft.position.copy(curve.getPointAt(0));
+    g.add(raft);
+    this.animatedParts.raft = raft;
+    this.animatedParts.raftT = 0;
+  }
+  _updateRiverRapids(delta) {
+    const { curve, raft } = this.animatedParts;
+    if (!curve || !raft) return;
+    this.animatedParts.raftT = (this.animatedParts.raftT + delta * 0.03) % 1;
+    const pos = curve.getPointAt(this.animatedParts.raftT);
+    const next = curve.getPointAt((this.animatedParts.raftT + 0.01) % 1);
+    raft.position.copy(pos);
+    const wn = this.group.localToWorld(next.clone());
+    raft.lookAt(wn);
+    raft.rotation.y += Math.sin(this.animTime * 2) * 0.02; // raft spin
+    // Raft bounce on rapids
+    raft.position.y += Math.sin(this.animTime * 4) * 0.08;
+    raft.rotation.x = Math.sin(this.animTime * 3) * 0.04; // pitch
+    raft.rotation.z = Math.sin(this.animTime * 2.5 + 1) * 0.03; // roll
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  WILD MOUSE — sharp hairpin coaster
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildWildMouse() {
+    const g = this.group;
+    const pts = [
+      new THREE.Vector3(0, 0.5, 4), new THREE.Vector3(4, 2, 3),
+      new THREE.Vector3(5, 3, 0), new THREE.Vector3(4, 3.5, -3),
+      new THREE.Vector3(0, 3, -4), new THREE.Vector3(-4, 2.5, -3),
+      new THREE.Vector3(-5, 2, 0), new THREE.Vector3(-4, 1, 3),
+    ];
+    const curve = new THREE.CatmullRomCurve3(pts, true, 'catmullrom', 0.3);
+    this.animatedParts.curve = curve;
+    const trackMat = mat(R_YELLOW);
+    for (let i = 0; i < 40; i++) {
+      const t = i / 40;
+      const pos = curve.getPointAt(t);
+      const tan = curve.getTangentAt(t).normalize();
+      const tie = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.1, 0.25), mat(R_METAL));
+      tie.position.copy(pos); tie.lookAt(pos.clone().add(tan)); tie.castShadow = true; g.add(tie);
+      for (const xOff of [-0.5, 0.5]) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.15, 0.4), trackMat);
+        const right = new THREE.Vector3().crossVectors(tan, new THREE.Vector3(0, 1, 0)).normalize();
+        rail.position.copy(pos).add(right.multiplyScalar(xOff)); rail.position.y += 0.08;
+        rail.lookAt(rail.position.clone().add(tan)); g.add(rail);
+      }
+      if (i % 4 === 0 && pos.y > 1) {
+        const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.25, pos.y, 0.25), mat(R_METAL));
+        pillar.position.set(pos.x, pos.y / 2, pos.z); pillar.castShadow = true; g.add(pillar);
+      }
+    }
+    const car = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 1.2), mat(R_ORANGE));
+    body.position.y = 0.5; body.castShadow = true; car.add(body);
+    car.position.copy(curve.getPointAt(0)); g.add(car);
+    this.animatedParts.car = car; this.animatedParts.carT = 0;
+    this.seats.push({ group: car, occupied: false, character: null });
+    this.seats.push({ group: car, occupied: false, character: null });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(10, 0.15, 8), mat(0x9e8b6e));
+    base.position.y = 0.07; base.receiveShadow = true; g.add(base);
+  }
+  _updateWildMouse(delta) {
+    const { curve, car } = this.animatedParts;
+    if (!curve || !car) return;
+    const curPos = curve.getPointAt(this.animatedParts.carT);
+    const ahead = curve.getPointAt((this.animatedParts.carT + 0.02) % 1);
+    const slope = ahead.y - curPos.y;
+    const speed = 0.06 + Math.max(0, -slope * 0.1);
+    this.animatedParts.carT = (this.animatedParts.carT + delta * speed) % 1;
+    const pos = curve.getPointAt(this.animatedParts.carT);
+    const next = curve.getPointAt((this.animatedParts.carT + 0.01) % 1);
+    car.position.copy(pos);
+    const wn = this.group.localToWorld(next.clone());
+    car.lookAt(wn);
+    // Dramatic lean on hairpin turns
+    car.rotation.x = 0;
+    const tan = curve.getTangentAt(this.animatedParts.carT);
+    const nTan = curve.getTangentAt((this.animatedParts.carT + 0.02) % 1);
+    const turnRate = tan.x * nTan.z - tan.z * nTan.x;
+    car.rotation.z = Math.max(-0.3, Math.min(0.3, -turnRate * 5));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  ENTERPRISE — spinning wheel that tilts upright
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildEnterprise() {
+    const g = this.group;
+    const metalMat = mat(R_METAL);
+    const tower = new THREE.Mesh(new THREE.BoxGeometry(0.6, 6, 0.6), metalMat);
+    tower.position.y = 3; tower.castShadow = true; g.add(tower);
+    const tiltPivot = new THREE.Group();
+    tiltPivot.position.y = 5.5;
+    const wheel = new THREE.Group();
+    const numSeats = 16;
+    const wheelR = 4;
+    for (let i = 0; i < numSeats; i++) {
+      const a = (i / numSeats) * Math.PI * 2;
+      const spoke = new THREE.Mesh(new THREE.BoxGeometry(wheelR * 2, 0.08, 0.08), metalMat);
+      spoke.rotation.z = a; wheel.add(spoke);
+      const sg = new THREE.Group();
+      sg.position.set(Math.cos(a) * wheelR, Math.sin(a) * wheelR, 0);
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.8, 0.5), mat(SEAT_COLORS[i % SEAT_COLORS.length]));
+      seat.castShadow = true; sg.add(seat);
+      wheel.add(sg);
+      this.seats.push({ group: sg, occupied: false, character: null });
+    }
+    // Rim
+    for (let i = 0; i < 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      const seg = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.08, 0.08), metalMat);
+      seg.position.set(Math.cos(a) * wheelR, Math.sin(a) * wheelR, 0);
+      seg.rotation.z = a + Math.PI / 2; wheel.add(seg);
+    }
+    tiltPivot.add(wheel);
+    g.add(tiltPivot);
+    this.animatedParts.wheel = wheel;
+    this.animatedParts.tiltPivot = tiltPivot;
+    const base = new THREE.Mesh(new THREE.BoxGeometry(9, 0.25, 9), mat(0x9e8b6e));
+    base.position.y = 0.12; base.receiveShadow = true; g.add(base);
+  }
+  _updateEnterprise() {
+    const { wheel, tiltPivot } = this.animatedParts;
+    if (!wheel) return;
+    wheel.rotation.z += 0.015;
+    // Tilt gradually upright then back down
+    const tiltCycle = (this.animTime * 0.08) % 1;
+    const tilt = tiltCycle < 0.5
+      ? Math.min(Math.PI / 2 * 0.85, tiltCycle * 2 * Math.PI / 2 * 0.85)
+      : Math.max(0, (1 - tiltCycle) * 2 * Math.PI / 2 * 0.85);
+    tiltPivot.rotation.x = tilt;
+    // Counter-rotate seats to stay upright (when tilted)
+    for (const s of this.seats) {
+      if (this.type !== 'enterprise') continue;
+      s.group.rotation.z = -wheel.rotation.z;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  GHOST TRAIN — spooky tunnel ride
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _buildGhostTrain() {
+    const g = this.group;
+    const darkMat = mat(0x1a1a2e);
+    const purpleMat = mat(0x4a2060);
+    // Building
+    const building = new THREE.Mesh(new THREE.BoxGeometry(8, 5, 6), darkMat);
+    building.position.y = 2.5; building.castShadow = true; g.add(building);
+    // Peaked roof
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(9, 0.3, 7), purpleMat);
+    roof.position.y = 5.2; roof.castShadow = true; g.add(roof);
+    const peak = new THREE.Mesh(new THREE.BoxGeometry(7, 0.3, 5), purpleMat);
+    peak.position.y = 5.7; g.add(peak);
+    // Entrance arch (dark opening)
+    const entrance = new THREE.Mesh(new THREE.BoxGeometry(2.5, 3, 0.3), mat(0x000000));
+    entrance.position.set(0, 1.5, 3.1); g.add(entrance);
+    // Skull above entrance
+    const skull = new THREE.Mesh(new THREE.SphereGeometry(0.5, 6, 6), mat(0xe0e0d0));
+    skull.position.set(0, 3.5, 3.2); g.add(skull);
+    for (const ex of [-0.15, 0.15]) {
+      const eye = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.1), mat(0xd03020));
+      eye.position.set(ex, 3.55, 3.55); g.add(eye);
+    }
+    // Spooky fence
+    for (let i = -3; i <= 3; i++) {
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.5, 0.12), mat(0x303030));
+      post.position.set(i * 1.2, 0.75, 3.5); post.castShadow = true; g.add(post);
+      const point = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.3, 0.08), mat(0x303030));
+      point.position.set(i * 1.2, 1.6, 3.5); g.add(point);
+    }
+    // Track (hidden inside but car emerges)
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 0.3, 3.5), new THREE.Vector3(2, 0.3, 0),
+      new THREE.Vector3(0, 0.3, -2), new THREE.Vector3(-2, 0.3, 0),
+    ], true, 'catmullrom', 0.5);
+    this.animatedParts.curve = curve;
+    const cart = new THREE.Group();
+    const cartBody = new THREE.Mesh(new THREE.BoxGeometry(1, 0.7, 1.6), purpleMat);
+    cartBody.position.y = 0.5; cartBody.castShadow = true; cart.add(cartBody);
+    cart.position.copy(curve.getPointAt(0)); g.add(cart);
+    this.animatedParts.cart = cart; this.animatedParts.cartT = 0;
+    this.seats.push({ group: cart, occupied: false, character: null });
+    this.seats.push({ group: cart, occupied: false, character: null });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(10, 0.15, 7), mat(0x9e8b6e));
+    base.position.y = 0.07; base.receiveShadow = true; g.add(base);
+  }
+  _updateGhostTrain(delta) {
+    const { curve, cart, cartLantern } = this.animatedParts;
+    if (!curve || !cart) return;
+    this.animatedParts.cartT = (this.animatedParts.cartT + delta * 0.025) % 1;
+    const pos = curve.getPointAt(this.animatedParts.cartT);
+    const next = curve.getPointAt((this.animatedParts.cartT + 0.01) % 1);
+    cart.position.copy(pos);
+    const wn = this.group.localToWorld(next.clone());
+    cart.lookAt(wn);
+    // Lantern flicker
+    if (cartLantern) {
+      const flicker = 0.7 + Math.sin(this.animTime * 8) * 0.2 + Math.random() * 0.15;
+      cartLantern.scale.setScalar(flicker);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  VISUAL DETAIL PASS — adds decorative elements to all rides after build
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  _addVisualDetails() {
+    const g = this.group;
+    const metalMat = mat(R_METAL);
+    const woodMat = mat(R_WOOD);
+    const darkMat = mat(0x1a1a1a);
+    const yellowMat = mat(R_YELLOW);
+    const whiteMat = mat(R_WHITE);
+
+    switch (this.type) {
+
+      case 'ferris_wheel': {
+        // Decorative lights along rim
+        for (let i = 0; i < 12; i++) {
+          const a = (i / 12) * Math.PI * 2;
+          const light = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.15), yellowMat);
+          light.position.set(Math.cos(a) * 5, Math.sin(a) * 5 + 6.5, 0);
+          g.add(light);
+        }
+        // Cross-bracing on A-frame
+        for (const zOff of [-1.5, 1.5]) {
+          const brace = new THREE.Mesh(new THREE.BoxGeometry(0.12, 4, 0.12), metalMat);
+          brace.position.set(0, 3.5, zOff); brace.rotation.z = 0.5; g.add(brace);
+        }
+        break;
+      }
+
+      case 'roller_coaster': {
+        // Wheels on each car + lap bars
+        if (this.animatedParts.carGroups) {
+          for (const car of this.animatedParts.carGroups) {
+            for (const [wx, wz] of [[-0.4, 0.4], [0.4, 0.4], [-0.4, -0.4], [0.4, -0.4]]) {
+              const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.08, 6), darkMat);
+              wheel.rotation.z = Math.PI / 2; wheel.position.set(wx, 0.15, wz); car.add(wheel);
+            }
+            // Lap bar
+            const lapBar = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.06, 0.06), metalMat);
+            lapBar.position.set(0, 0.9, 0.2); car.add(lapBar);
+          }
+        }
+        break;
+      }
+
+      case 'carousel': {
+        // Decorative panels around platform edge
+        for (let i = 0; i < 12; i++) {
+          const a = (i / 12) * Math.PI * 2;
+          const panel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.6, 1.2),
+            mat(SEAT_COLORS[i % SEAT_COLORS.length]));
+          panel.position.set(Math.cos(a) * 3.2, 0.7, Math.sin(a) * 3.2);
+          panel.rotation.y = a;
+          if (this.animatedParts.spinner) this.animatedParts.spinner.add(panel);
+        }
+        break;
+      }
+
+      case 'swing_ride': {
+        // Light ring around disc edge
+        if (this.animatedParts.topGroup) {
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2;
+            const light = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.2), yellowMat);
+            light.position.set(Math.cos(a) * 2.6, -0.05, Math.sin(a) * 2.6);
+            this.animatedParts.topGroup.add(light);
+          }
+        }
+        break;
+      }
+
+      case 'spinning_cups': {
+        // Teapot lid and spout on center ornament
+        if (this.animatedParts.spinner) {
+          const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.45, 0.2, 6), yellowMat);
+          lid.position.y = 2.3; this.animatedParts.spinner.add(lid);
+          const spout = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.3, 0.5), yellowMat);
+          spout.position.set(0.6, 1.5, 0); spout.rotation.z = -0.5;
+          this.animatedParts.spinner.add(spout);
+        }
+        break;
+      }
+
+      case 'drop_tower': {
+        // Warning stripes on cap
+        for (let i = 0; i < 4; i++) {
+          const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.3),
+            mat(i % 2 === 0 ? R_RED : R_YELLOW));
+          stripe.position.set(0, 13.1 + i * 0.12, 0); g.add(stripe);
+        }
+        // Shoulder harness on each seat
+        for (const seat of this.seats) {
+          const harness = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.08), metalMat);
+          harness.position.set(0, 0.5, -0.15); seat.group.add(harness);
+        }
+        break;
+      }
+
+      case 'pirate_ship': {
+        // Portholes on hull
+        if (this.animatedParts.hullGroup) {
+          for (let i = -1; i <= 1; i++) {
+            for (const xOff of [-0.85, 0.85]) {
+              const port = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, 0.3), darkMat);
+              port.position.set(xOff, 0.3, i * 1.2);
+              this.animatedParts.hullGroup.add(port);
+            }
+          }
+          // Cannons
+          for (const xOff of [-0.9, 0.9]) {
+            const cannon = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.06, 0.5, 6), darkMat);
+            cannon.rotation.z = Math.PI / 2;
+            cannon.position.set(xOff * 1.1, 0.2, 0.5);
+            this.animatedParts.hullGroup.add(cannon);
+          }
+        }
+        break;
+      }
+
+      case 'bumper_cars': {
+        // Floor markings
+        for (let x = -3; x <= 3; x += 2) {
+          const line = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, 5), yellowMat);
+          line.position.set(x, 0.17, 0); g.add(line);
+        }
+        // Spark poles on cars (antenna with yellow tip)
+        for (const seat of this.seats) {
+          const pole = new THREE.Mesh(new THREE.BoxGeometry(0.04, 1, 0.04), metalMat);
+          pole.position.y = 0.9; seat.group.add(pole);
+          const tip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), yellowMat);
+          tip.position.y = 1.45; seat.group.add(tip);
+        }
+        break;
+      }
+
+      case 'haunted_house': {
+        // Gravestones in front yard
+        for (let i = 0; i < 4; i++) {
+          const grave = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.7, 0.15), mat(0x808080));
+          grave.position.set(-2.5 + i * 1.5, 0.35, 4.5);
+          grave.rotation.z = (Math.random() - 0.5) * 0.15;
+          g.add(grave);
+        }
+        // Green fog at entrance
+        for (let i = 0; i < 3; i++) {
+          const fog = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.4, 1),
+            new THREE.MeshLambertMaterial({ color: 0x40c040, transparent: true, opacity: 0.25, flatShading: true }));
+          fog.position.set((Math.random() - 0.5) * 2, 0.3, 3.5 + i * 0.5);
+          g.add(fog);
+        }
+        break;
+      }
+
+      case 'go_karts': {
+        // Checkered flag at start/finish
+        const flagPole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.5, 0.08), metalMat);
+        flagPole.position.set(0, 1.25, 3.8); g.add(flagPole);
+        const flag = new THREE.Group();
+        for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) {
+          const sq = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.03),
+            mat((r + c) % 2 === 0 ? 0xffffff : 0x1a1a1a));
+          sq.position.set(c * 0.2 + 0.15, 2.3 - r * 0.2, 3.8); g.add(sq);
+        }
+        // Spoiler wings on karts
+        if (this.animatedParts.kartGroups) {
+          for (const kart of this.animatedParts.kartGroups) {
+            const spoiler = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.06, 0.2), metalMat);
+            spoiler.position.set(0, 0.55, -0.6); kart.add(spoiler);
+            const spoilerLegs = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.2, 0.04), metalMat);
+            spoilerLegs.position.set(0, 0.45, -0.6); kart.add(spoilerLegs);
+          }
+        }
+        break;
+      }
+
+      case 'observation_tower': {
+        // Beacon light at very top
+        const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.3, 6, 6), yellowMat);
+        beacon.position.y = 13.5; g.add(beacon);
+        this.animatedParts.beacon = beacon;
+        // Railing around cabin
+        if (this.animatedParts.cabin) {
+          for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2;
+            const post = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.4, 0.06), metalMat);
+            post.position.set(Math.cos(a) * 2.15, -0.7, Math.sin(a) * 2.15);
+            this.animatedParts.cabin.add(post);
+          }
+        }
+        break;
+      }
+
+      case 'mini_railway': {
+        // Wheels on each car
+        if (this.animatedParts.cars) {
+          for (const car of this.animatedParts.cars) {
+            for (const [wx, wz] of [[-0.35, 0.35], [0.35, 0.35], [-0.35, -0.35], [0.35, -0.35]]) {
+              const w = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.06, 6), darkMat);
+              w.rotation.z = Math.PI / 2; w.position.set(wx, 0.1, wz); car.add(w);
+            }
+          }
+        }
+        // Station platform at track start
+        const stn = new THREE.Mesh(new THREE.BoxGeometry(3, 0.25, 1.5), mat(0x9e8b6e));
+        stn.position.set(-7, 0.18, 2.5); g.add(stn);
+        break;
+      }
+
+      case 'merry_go_round': {
+        // Horse legs for each horse seat
+        for (const seat of this.seats) {
+          if (this.type !== 'merry_go_round') continue;
+          for (const [lx, lz] of [[-0.12, 0.25], [0.12, 0.25], [-0.12, -0.25], [0.12, -0.25]]) {
+            const leg = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.35, 0.08),
+              mat(SEAT_COLORS[0]));
+            leg.position.set(lx, -0.4, lz); seat.group.add(leg);
+          }
+          // Saddle
+          const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.08, 0.4), mat(R_WOOD));
+          saddle.position.set(0, 0.3, 0); seat.group.add(saddle);
+        }
+        break;
+      }
+
+      case 'top_spin': {
+        // Safety bars over seats
+        if (this.animatedParts.gondola) {
+          for (let i = 0; i < 4; i++) {
+            const bar = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.08, 0.08), metalMat);
+            bar.position.set((i - 1.5) * 1, 0.5, 0);
+            this.animatedParts.gondola.add(bar);
+          }
+          // Operator booth at base
+          const booth = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), mat(R_BLUE));
+          booth.position.set(3.5, 0.75, 0); g.add(booth);
+          const boothRoof = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.15, 1.8), mat(R_RED));
+          boothRoof.position.set(3.5, 1.6, 0); g.add(boothRoof);
+        }
+        break;
+      }
+
+      case 'river_rapids': {
+        // Rope handles around raft
+        if (this.animatedParts.raft) {
+          for (let i = 0; i < 8; i++) {
+            const a = (i / 8) * Math.PI * 2;
+            const handle = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.25, 0.06), mat(R_WOOD));
+            handle.position.set(Math.cos(a) * 0.9, 0.5, Math.sin(a) * 0.9);
+            this.animatedParts.raft.add(handle);
+          }
+        }
+        // Boulders in channel
+        for (let i = 0; i < 6; i++) {
+          const boulder = new THREE.Mesh(new THREE.DodecahedronGeometry(0.4 + Math.random() * 0.3, 0),
+            new THREE.MeshLambertMaterial({ color: 0x808080, flatShading: true }));
+          const a = Math.random() * Math.PI * 2;
+          const r = 5 + Math.random() * 2;
+          boulder.position.set(Math.cos(a) * r, 0.3, Math.sin(a) * r);
+          boulder.scale.set(1, 0.6, 1);
+          g.add(boulder);
+        }
+        break;
+      }
+
+      case 'wild_mouse': {
+        // Mouse ears on car
+        if (this.animatedParts.car) {
+          for (const ex of [-0.25, 0.25]) {
+            const ear = new THREE.Mesh(new THREE.SphereGeometry(0.15, 6, 6), darkMat);
+            ear.position.set(ex, 0.9, 0.5);
+            this.animatedParts.car.add(ear);
+          }
+          // Windshield
+          const windshield = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.3, 0.05),
+            new THREE.MeshLambertMaterial({ color: 0x88ccff, transparent: true, opacity: 0.5, flatShading: true }));
+          windshield.position.set(0, 0.75, 0.55);
+          this.animatedParts.car.add(windshield);
+        }
+        break;
+      }
+
+      case 'enterprise': {
+        // Gondola pod enclosures around each seat
+        for (const seat of this.seats) {
+          if (this.type !== 'enterprise') continue;
+          const pod = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.9, 0.6), metalMat);
+          pod.position.y = -0.05; pod.material = new THREE.MeshLambertMaterial({
+            color: R_METAL, flatShading: true, transparent: true, opacity: 0.4 });
+          seat.group.add(pod);
+        }
+        // Hub cap at wheel center
+        const hubCap = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.3, 8), mat(R_RED));
+        hubCap.rotation.x = Math.PI / 2;
+        if (this.animatedParts.wheel) this.animatedParts.wheel.add(hubCap);
+        break;
+      }
+
+      case 'ghost_train': {
+        // Gravestones in front
+        for (let i = 0; i < 3; i++) {
+          const grave = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.6, 0.12), mat(0x808080));
+          grave.position.set(-2 + i * 2, 0.3, 4);
+          grave.rotation.z = (Math.random() - 0.5) * 0.2;
+          g.add(grave);
+        }
+        // Green fog at entrance
+        for (let i = 0; i < 4; i++) {
+          const fog = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.3, 0.8),
+            new THREE.MeshLambertMaterial({ color: 0x30a040, transparent: true, opacity: 0.2, flatShading: true }));
+          fog.position.set((Math.random() - 0.5) * 2, 0.2, 3.5);
+          g.add(fog);
+        }
+        // Cart lantern
+        if (this.animatedParts.cart) {
+          const lantern = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.2, 0.15), yellowMat);
+          lantern.position.set(0, 0.8, 0.7);
+          this.animatedParts.cart.add(lantern);
+          this.animatedParts.cartLantern = lantern;
+        }
+        break;
+      }
+
+      case 'log_flume': {
+        // Bark ridges on log
+        if (this.animatedParts.logGroup) {
+          for (let i = 0; i < 4; i++) {
+            const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.06, 0.15), mat(0x5a3a1a));
+            ridge.position.set(0, 0.35, -0.6 + i * 0.4);
+            this.animatedParts.logGroup.add(ridge);
+          }
+          // Splash guard at bow
+          const guard = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.3, 0.15), mat(0x6b4226));
+          guard.position.set(0, 0.35, 0.95); guard.rotation.x = -0.3;
+          this.animatedParts.logGroup.add(guard);
+        }
+        break;
+      }
+    }
   }
 }

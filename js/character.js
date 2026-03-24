@@ -77,6 +77,9 @@ export class Character {
     this.currentRide = null;
     this.isFlying = false;       // launched off a ride
     this.flyVelocity = null;     // THREE.Vector3
+    this.isQueueing = false;     // waiting for a ride seat
+    this.queueRide = null;       // ride we're waiting for
+    this.queueTarget = null;     // Vector3 position to stand at in queue
     this.animTime = Math.random() * Math.PI * 2;
     this.chatBubble = null;
     this.chatTimer = 0;
@@ -210,16 +213,29 @@ export class Character {
       return;
     }
 
-    // Find path from current position to room interior
+    // Path to ride entrance (not center) so guests queue at the gate
+    const entranceNodeId = `ride-entrance:${step.page}`;
+    const targetNode = this.pathGraph.nodes.has(entranceNodeId) ? entranceNodeId : room.nodeId;
     const pos = this.group.position;
-    console.log(`%c[Character] Step ${this.journeyStepIndex}: "${step.page}" → node "${room.nodeId}" (from ${pos.x.toFixed(1)},${pos.z.toFixed(1)})`, 'color:#80cbc4');
+    console.log(`%c[Character] Step ${this.journeyStepIndex}: "${step.page}" → node "${targetNode}" (from ${pos.x.toFixed(1)},${pos.z.toFixed(1)})`, 'color:#80cbc4');
 
-    const path = this.pathGraph.getPathFromPosition(this.group.position, room.nodeId);
+    let path = this.pathGraph.getPathFromPosition(this.group.position, targetNode);
     if (!path) {
-      console.error(`%c[Character] ✗ No path to "${room.nodeId}"`, 'color:#ff5252');
-      this.journeyStepIndex++;
-      this._startNextStep();
-      return;
+      // Fallback: teleport to nearest known node and retry
+      const nearestId = this.pathGraph.findNearestNode(this.group.position);
+      if (nearestId) {
+        const nearestPos = this.pathGraph.nodes.get(nearestId).position;
+        console.warn(`%c[Character] No path — teleporting to nearest node "${nearestId}"`, 'color:#ff9800');
+        this.group.position.copy(nearestPos);
+        path = this.pathGraph.findPath(nearestId, targetNode);
+      }
+      if (!path) {
+        // Still no path — teleport directly to the ride entrance
+        const fallbackPos = room.ride?.entrancePosition || room.position;
+        console.warn(`%c[Character] Still no path — teleporting to entrance "${step.page}"`, 'color:#ff9800');
+        this.group.position.copy(fallbackPos);
+        path = [fallbackPos.clone()];
+      }
     }
 
     console.log(`%c[Character] ✓ Path found: ${path.length} waypoints, duration=${step.duration.toFixed(1)}s`, 'color:#69f0ae');
@@ -238,8 +254,8 @@ export class Character {
   _leave() {
     this.isLeaving = true;
     this.currentRoom = null;
-    // Try parking first, fall back to exit
-    const targetNode = this.pathGraph.nodes.has('parking') ? 'parking' : 'exit';
+    // Head to station, fall back to exit
+    const targetNode = this.pathGraph.nodes.has('station') ? 'station' : 'exit';
     const path = this.pathGraph.getPathFromPosition(this.group.position, targetNode);
     if (path) {
       console.log(`%c[Character] Leaving via ${path.length} waypoints to ${targetNode}`, 'color:#80cbc4');
@@ -248,7 +264,21 @@ export class Character {
       this.isWalking = true;
       this.currentSpeed = WALK_SPEED;
     } else {
-      console.error(`%c[Character] ✗ No path to ${targetNode} — dying immediately`, 'color:#ff5252');
+      // Fallback: teleport to nearest node and retry, or just teleport out
+      const nearestId = this.pathGraph.findNearestNode(this.group.position);
+      if (nearestId) {
+        this.group.position.copy(this.pathGraph.nodes.get(nearestId).position);
+        const retryPath = this.pathGraph.findPath(nearestId, targetNode);
+        if (retryPath) {
+          this.waypoints = retryPath;
+          this.waypointIndex = 0;
+          this.isWalking = true;
+          this.currentSpeed = WALK_SPEED;
+          return;
+        }
+      }
+      console.warn(`%c[Character] No path to ${targetNode} — teleporting to exit`, 'color:#ff9800');
+      this.group.position.set(0, 0, 20); // parking area
       this.isDead = true;
     }
   }
@@ -277,6 +307,24 @@ export class Character {
     this.isFlying = true;
     this.wasLaunched = true; // permanent flag — no car on death
     this.isLeaving = true;
+  }
+
+  _assignQueuePosition() {
+    const ride = this.queueRide;
+    if (!ride || !ride.queuePositions || ride.queuePositions.length === 0) {
+      // No queue positions defined — stand at entrance with slight offset
+      this.queueTarget = ride.entrancePosition.clone().add(
+        new THREE.Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5)
+      );
+      return;
+    }
+    // Find a queue slot — spread back along queuePositions
+    const queuers = this.currentRoom?.characters?.filter(c => c !== this && c.isQueueing && c.queueRide === ride) || [];
+    const slotIdx = Math.min(queuers.length, ride.queuePositions.length - 1);
+    this.queueTarget = ride.queuePositions[Math.max(0, slotIdx)].clone();
+    // Add slight offset so characters don't stack perfectly
+    this.queueTarget.x += (Math.random() - 0.5) * 0.6;
+    this.queueTarget.z += (Math.random() - 0.5) * 0.6;
   }
 
   _pickWanderTarget() {
@@ -320,8 +368,13 @@ export class Character {
               this.isRiding = true;
               this.currentRide = this.currentRoom.ride;
               this.currentRide.boardGuest(this);
+            } else if (this.currentRoom?.ride) {
+              // Ride is full — queue up and walk to a queue position
+              this.isQueueing = true;
+              this.queueRide = this.currentRoom.ride;
+              this._assignQueuePosition();
             } else {
-              // Normal idle/wander in bounds
+              // No ride in this room, just idle/wander
               this.isIdling = true;
               this.wanderTimer = 1 + Math.random() * 2;
             }
@@ -371,6 +424,29 @@ export class Character {
           this.onExplode(this, this.group.position.clone());
         }
         this.isDead = true;
+      }
+    }
+
+    // Queueing for a ride — walk to queue position, check for seat
+    if (this.isQueueing && this.queueRide) {
+      // Walk toward queue target if assigned
+      if (this.queueTarget) {
+        const toTarget = new THREE.Vector3().subVectors(this.queueTarget, this.group.position);
+        toTarget.y = 0;
+        if (toTarget.length() > 0.3) {
+          toTarget.normalize();
+          this.group.position.add(toTarget.multiplyScalar(WANDER_SPEED * delta));
+          this.group.rotation.y = Math.atan2(toTarget.x, toTarget.z);
+        }
+      }
+
+      if (this.queueRide.hasAvailableSeat()) {
+        this.isQueueing = false;
+        this.isRiding = true;
+        this.currentRide = this.queueRide;
+        this.currentRide.boardGuest(this);
+        this.queueRide = null;
+        this.queueTarget = null;
       }
     }
 
