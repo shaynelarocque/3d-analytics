@@ -1007,37 +1007,47 @@ export class Ride {
     roof.castShadow = true;
     g.add(roof);
 
-    // Car
-    const carGroup = new THREE.Group();
-    const carBody = new THREE.Mesh(new THREE.BoxGeometry(1, 0.7, 1.4), mat(R_ORANGE));
-    carBody.position.y = 0.5;
-    carBody.castShadow = true;
-    carGroup.add(carBody);
-    carGroup.position.copy(curve.getPointAt(0));
-    g.add(carGroup);
-
-    this.animatedParts.carGroup = carGroup;
+    // 3-car train chain (like roller coaster)
+    const NUM_CARS = 3;
+    const CAR_SPACING = 0.025;
+    const loopCarColors = [R_PURPLE, R_ORANGE, R_CYAN];
+    const carGroups = [];
+    for (let c = 0; c < NUM_CARS; c++) {
+      const car = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.6, 1.2), mat(loopCarColors[c]));
+      body.position.y = 0.5; body.castShadow = true; car.add(body);
+      if (c > 0) {
+        const conn = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.4), mat(R_METAL));
+        conn.position.set(0, 0.35, 0.7); car.add(conn);
+      }
+      car.position.copy(curve.getPointAt(c * CAR_SPACING));
+      g.add(car); carGroups.push(car);
+      this.seats.push({ group: car, occupied: false, character: null });
+    }
+    this.animatedParts.carGroups = carGroups;
+    this.animatedParts.carSpacing = CAR_SPACING;
     this.animatedParts.carT = 0;
-    this.seats.push({ group: carGroup, occupied: false, character: null });
-    this.seats.push({ group: carGroup, occupied: false, character: null });
   }
 
   _updateLoopCoaster(delta) {
-    const { curve, carGroup } = this.animatedParts;
-    if (!curve || !carGroup) return;
+    const { curve, carGroups, carSpacing } = this.animatedParts;
+    if (!curve || !carGroups) return;
 
-    // Speed varies with height — faster on drops, slower climbing the loop
     const curPos = curve.getPointAt(this.animatedParts.carT);
     const aheadPos = curve.getPointAt((this.animatedParts.carT + 0.02) % 1);
     const slope = aheadPos.y - curPos.y;
     const speed = 0.07 + Math.max(0, -slope * 0.08);
 
     this.animatedParts.carT = (this.animatedParts.carT + delta * speed) % 1;
-    const pos = curve.getPointAt(this.animatedParts.carT);
-    const nextPos = curve.getPointAt((this.animatedParts.carT + 0.01) % 1);
-    carGroup.position.copy(pos);
-    const worldNext = this.group.localToWorld(nextPos.clone());
-    carGroup.lookAt(worldNext);
+    const t = this.animatedParts.carT;
+    for (let i = 0; i < carGroups.length; i++) {
+      const carT = (t - i * carSpacing + 1) % 1;
+      const pos = curve.getPointAt(carT);
+      const nextPos = curve.getPointAt((carT + 0.01) % 1);
+      carGroups[i].position.copy(pos);
+      const worldNext = this.group.localToWorld(nextPos.clone());
+      carGroups[i].lookAt(worldNext);
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1115,23 +1125,24 @@ export class Ride {
       this.animatedParts.splashes.push(splash);
     }
 
-    // Log boat
-    const logGroup = new THREE.Group();
-    const log = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 2), mat(0x6b4226));
-    log.position.y = 0.1;
-    log.castShadow = true;
-    logGroup.add(log);
-    // Hollow center
-    const hollow = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 1.4), mat(0x4a2f1a));
-    hollow.position.y = 0.25;
-    logGroup.add(hollow);
-    logGroup.position.copy(curve.getPointAt(0));
-    g.add(logGroup);
-
-    this.animatedParts.logGroup = logGroup;
+    // 3 log boats in a chain
+    const NUM_LOGS = 3;
+    const LOG_SPACING = 0.04;
+    const logGroups = [];
+    for (let l = 0; l < NUM_LOGS; l++) {
+      const logGroup = new THREE.Group();
+      const log = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 2), mat(0x6b4226));
+      log.position.y = 0.1; log.castShadow = true; logGroup.add(log);
+      const hollow = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 1.4), mat(0x4a2f1a));
+      hollow.position.y = 0.25; logGroup.add(hollow);
+      logGroup.position.copy(curve.getPointAt(l * LOG_SPACING));
+      g.add(logGroup);
+      logGroups.push(logGroup);
+      this.seats.push({ group: logGroup, occupied: false, character: null });
+    }
+    this.animatedParts.logGroups = logGroups;
+    this.animatedParts.logSpacing = LOG_SPACING;
     this.animatedParts.logT = 0;
-    this.seats.push({ group: logGroup, occupied: false, character: null });
-    this.seats.push({ group: logGroup, occupied: false, character: null });
 
     // Platform
     const platform = new THREE.Mesh(new THREE.BoxGeometry(4, 0.25, 3), mat(0x9e8b6e));
@@ -1141,24 +1152,29 @@ export class Ride {
   }
 
   _updateLogFlume(delta) {
-    const { curve, logGroup, splashes } = this.animatedParts;
-    if (!curve || !logGroup) return;
+    const { curve, logGroups, logSpacing, splashes } = this.animatedParts;
+    if (!curve || !logGroups) return;
 
-    // Speed varies with slope — faster on drops, slower climbing
+    // Speed varies with slope
     const curPos = curve.getPointAt(this.animatedParts.logT);
     const aheadPos = curve.getPointAt((this.animatedParts.logT + 0.02) % 1);
     const slope = aheadPos.y - curPos.y;
-    const speed = 0.04 + Math.max(0, -slope * 0.1); // faster going down
+    const speed = 0.04 + Math.max(0, -slope * 0.1);
 
     this.animatedParts.logT = (this.animatedParts.logT + delta * speed) % 1;
-    const pos = curve.getPointAt(this.animatedParts.logT);
-    const nextPos = curve.getPointAt((this.animatedParts.logT + 0.01) % 1);
-    logGroup.position.copy(pos);
-    const worldNext = this.group.localToWorld(nextPos.clone());
-    logGroup.lookAt(worldNext);
+    const t = this.animatedParts.logT;
 
-    // Tilt forward/back on slopes
-    logGroup.rotation.x = slope * 0.5;
+    for (let i = 0; i < logGroups.length; i++) {
+      const logT = (t - i * logSpacing + 1) % 1;
+      const pos = curve.getPointAt(logT);
+      const nextPos = curve.getPointAt((logT + 0.01) % 1);
+      logGroups[i].position.copy(pos);
+      const worldNext = this.group.localToWorld(nextPos.clone());
+      logGroups[i].lookAt(worldNext);
+      // Tilt on slopes
+      const lSlope = curve.getPointAt((logT + 0.02) % 1).y - pos.y;
+      logGroups[i].rotation.x = lSlope * 0.5;
+    }
 
     // Animate splash particles (bigger splashes at high speed)
     if (splashes) {
@@ -1310,17 +1326,7 @@ export class Ride {
       g.add(stripe);
     }
 
-    // Roof structure (poles + canopy)
-    for (const [px, pz] of [[-3.5, -2.5], [3.5, -2.5], [-3.5, 2.5], [3.5, 2.5]]) {
-      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3, 0.2), mat(R_METAL));
-      pole.position.set(px, 1.6, pz);
-      pole.castShadow = true;
-      g.add(pole);
-    }
-    const canopy = new THREE.Mesh(new THREE.BoxGeometry(8.5, 0.15, 6.5), mat(R_RED));
-    canopy.position.y = 3.2;
-    canopy.castShadow = true;
-    g.add(canopy);
+    // No roof — open air bumper cars arena
 
     // Bumper cars (4, each orbiting differently)
     const carColors = [R_RED, R_YELLOW, R_GREEN, R_CYAN];
@@ -1347,18 +1353,69 @@ export class Ride {
     this.animatedParts.carGroups = carGroups;
   }
 
-  _updateBumperCars() {
+  _updateBumperCars(delta) {
     const { carGroups } = this.animatedParts;
     if (!carGroups) return;
+
+    // Initialize per-car state if needed
+    if (!this.animatedParts.bumperStates) {
+      this.animatedParts.bumperStates = carGroups.map((_, i) => ({
+        angle: (i / 4) * Math.PI * 2,
+        speed: 0.5 + Math.random() * 0.5,
+        turnRate: (Math.random() - 0.5) * 2,
+        turnTimer: 1 + Math.random() * 2,
+        bumpCooldown: 0,
+      }));
+    }
+    const states = this.animatedParts.bumperStates;
+
     for (let i = 0; i < carGroups.length; i++) {
-      const phase = this.animTime * (0.4 + i * 0.12) + i * 1.5;
-      const r = 2 + Math.sin(this.animTime * 0.3 + i * 2) * 0.8;
-      carGroups[i].position.set(
-        Math.cos(phase) * r,
-        0,
-        Math.sin(phase) * r * 0.7
-      );
-      carGroups[i].rotation.y = phase + Math.PI / 2;
+      const s = states[i];
+      s.turnTimer -= delta;
+      s.bumpCooldown -= delta;
+
+      // Change direction randomly
+      if (s.turnTimer <= 0) {
+        s.turnRate = (Math.random() - 0.5) * 3;
+        s.speed = 0.4 + Math.random() * 0.6;
+        s.turnTimer = 0.8 + Math.random() * 2;
+      }
+
+      s.angle += s.turnRate * delta;
+      const car = carGroups[i];
+      const dx = Math.cos(s.angle) * s.speed * delta * 3;
+      const dz = Math.sin(s.angle) * s.speed * delta * 3;
+      const nx = car.position.x + dx;
+      const nz = car.position.z + dz;
+
+      // Keep in arena bounds
+      if (Math.abs(nx) < 3.5 && Math.abs(nz) < 2.5) {
+        car.position.x = nx;
+        car.position.z = nz;
+      } else {
+        s.angle += Math.PI * 0.7; // bounce off wall
+        s.turnTimer = 0; // immediate turn change
+      }
+
+      car.rotation.y = s.angle + Math.PI / 2;
+
+      // Bump detection — check proximity to other cars
+      for (let j = i + 1; j < carGroups.length; j++) {
+        const other = carGroups[j];
+        const dist = car.position.distanceTo(other.position);
+        if (dist < 1.5 && s.bumpCooldown <= 0) {
+          // Bump! Both cars wobble
+          car.rotation.z = (Math.random() - 0.5) * 0.3;
+          other.rotation.z = (Math.random() - 0.5) * 0.3;
+          s.angle += Math.PI * 0.5;
+          states[j].angle -= Math.PI * 0.5;
+          s.bumpCooldown = 0.5;
+          states[j].bumpCooldown = 0.5;
+        }
+      }
+
+      // Recover wobble from bumps
+      car.rotation.z *= 0.92;
     }
   }
 
@@ -1399,10 +1456,21 @@ export class Ride {
     door.position.set(0, 1.25, 3.05);
     g.add(door);
 
-    // Boarded windows
-    for (const [wx, wz] of [[-2.5, 3.05], [2.5, 3.05]]) {
-      const win = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 0.1), mat(0x605020));
-      win.position.set(wx, 2.5, wz);
+    // Boarded windows on ALL faces
+    const windowPositions = [
+      // Front face (z = 3.05)
+      [-2.5, 2.5, 3.05, 0], [2.5, 2.5, 3.05, 0],
+      // Back face (z = -3.05)
+      [-2.5, 2.5, -3.05, 0], [2.5, 2.5, -3.05, 0], [0, 3, -3.05, 0],
+      // Left face (x = -4.05) — rotated 90°
+      [-4.05, 2.5, -1, 1], [-4.05, 2.5, 1.5, 1],
+      // Right face (x = 4.05) — rotated 90°
+      [4.05, 2.5, -1, 1], [4.05, 2.5, 1.5, 1], [4.05, 3, 0, 1],
+    ];
+    for (const [wx, wy, wz, rotated] of windowPositions) {
+      const winW = rotated ? 0.1 : 1, winD = rotated ? 1 : 0.1;
+      const win = new THREE.Mesh(new THREE.BoxGeometry(winW, 1, winD), mat(0x605020));
+      win.position.set(wx, wy, wz);
       g.add(win);
       // Board
       const board = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.15, 0.15), mat(R_WOOD));

@@ -269,7 +269,7 @@ function initScene() {
   camera = new THREE.OrthographicCamera(
     -frustum * aspect, frustum * aspect,
     frustum, -frustum,
-    0.1, 1000
+    -500, 1000
   );
   // Classic isometric angle: ~35.264° elevation, 45° azimuth
   const isoDistance = 80;
@@ -708,13 +708,29 @@ function updateTimeline(delta) {
   const advance = delta * 1000 * timeline.baseSpeed * timeline.speed;
   timeline.current += advance;
 
-  // Loop when reaching the end
-  if (timeline.current >= timeline.endAt) {
-    timeline.current = timeline.startAt;
-    timeline.sessionQueue = [...(timeline.allSessions || [])];
-    clearAllCharacters();
-    document.getElementById('chat-messages').innerHTML = '';
-    addChatMessage('Park', 'new day', 'starting...');
+  // When timeline reaches end — enter night mode, let guests finish, then restart
+  if (timeline.current >= timeline.endAt && !timeline.nightMode) {
+    timeline.nightMode = true;
+    timeline.nightTimer = 8; // 8 seconds of night before restart
+    addChatMessage('Park', 'closing time', 'the park is winding down...');
+    // Dim the sky to night
+    if (renderer) renderer.setClearColor(0x1a2040);
+  }
+
+  if (timeline.nightMode) {
+    timeline.nightTimer -= delta;
+    // Let existing guests finish their journeys
+    if (timeline.nightTimer <= 0 || characters.length === 0) {
+      // Restart: new day!
+      timeline.nightMode = false;
+      timeline.current = timeline.startAt;
+      timeline.sessionQueue = [...(timeline.allSessions || [])];
+      clearAllCharacters();
+      document.getElementById('chat-messages').innerHTML = '';
+      addChatMessage('Park', 'new day', 'gates are open!');
+      if (renderer) renderer.setClearColor(0x88c070); // back to day
+    }
+    return; // don't spawn new sessions during night
   }
 
   // Spawn sessions whose spawnAt <= current timeline position

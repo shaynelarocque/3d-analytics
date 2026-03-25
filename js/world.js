@@ -997,26 +997,43 @@ export class World {
     const trackCurve = new THREE.CatmullRomCurve3(trackPts, true, 'catmullrom', 0.4);
     this.trainPath = trackCurve;
 
-    // Render elevated track: beam + support pillars
-    const numSegs = 200;
+    // Render monorail guideway — solid concrete beam with side rails
+    const beamMat = mat(0xd0d0d0); // light concrete color
+    const numSegs = 300; // more segments = smoother, no gaps
     for (let i = 0; i < numSegs; i++) {
       const t = i / numSegs;
       const pos = trackCurve.getPointAt(t);
       const tangent = trackCurve.getTangentAt(t).normalize();
       const right = new THREE.Vector3().crossVectors(tangent, new THREE.Vector3(0, 1, 0)).normalize();
 
-      // Track beam (single wide rail for monorail)
-      const beam = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.2, 2.2), railMat);
+      // Main guideway beam (wide concrete)
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.5, 2.5), beamMat);
       beam.position.copy(pos);
+      beam.position.y -= 0.1;
       beam.lookAt(pos.clone().add(tangent));
       this.scene.add(beam);
 
-      // Support pillar every 6 segments (~every 7 world units)
-      if (i % 6 === 0) {
-        const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.4, MONO_Y, 0.4), pillarMat);
-        pillar.position.set(pos.x, MONO_Y / 2, pos.z);
-        pillar.castShadow = true;
-        this.scene.add(pillar);
+      // Side guide rails (darker, thinner)
+      for (const side of [-0.8, 0.8]) {
+        const guideRail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.3, 2.5), railMat);
+        guideRail.position.copy(pos).add(right.clone().multiplyScalar(side));
+        guideRail.position.y += 0.15;
+        guideRail.lookAt(guideRail.position.clone().add(tangent));
+        this.scene.add(guideRail);
+      }
+
+      // Support pillar every 8 segments — T-shaped column
+      if (i % 8 === 0) {
+        // Vertical column
+        const col = new THREE.Mesh(new THREE.BoxGeometry(0.6, MONO_Y - 0.5, 0.6), pillarMat);
+        col.position.set(pos.x, (MONO_Y - 0.5) / 2, pos.z);
+        col.castShadow = true;
+        this.scene.add(col);
+        // T-cap (wider at top to support beam)
+        const cap = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.3, 1.2), pillarMat);
+        cap.position.set(pos.x, MONO_Y - 0.6, pos.z);
+        cap.lookAt(cap.position.clone().add(tangent));
+        this.scene.add(cap);
       }
     }
 
@@ -1034,20 +1051,26 @@ export class World {
     for (let s = 0; s < 4; s++) {
       const sPos = trackCurve.getPointAt(stationTs[s]);
 
-      // Platform
-      const platform = new THREE.Mesh(new THREE.BoxGeometry(8, 0.35, 5), mat(0x9e8b6e));
+      // Platform — rotated 90° for E/W stations
+      const isEW = s === 1 || s === 3;
+      const platW = isEW ? 5 : 8, platD = isEW ? 8 : 5;
+      const platform = new THREE.Mesh(new THREE.BoxGeometry(platW, 0.35, platD), mat(0x9e8b6e));
       platform.position.set(sPos.x, MONO_Y - 0.2, sPos.z);
       platform.receiveShadow = true;
       this.scene.add(platform);
 
       // Shelter roof
-      const shelter = new THREE.Mesh(new THREE.BoxGeometry(7, 0.15, 4), mat(0xd03020));
+      const shW = isEW ? 4 : 7, shD = isEW ? 7 : 4;
+      const shelter = new THREE.Mesh(new THREE.BoxGeometry(shW, 0.15, shD), mat(0xd03020));
       shelter.position.set(sPos.x, MONO_Y + 2.5, sPos.z);
       shelter.castShadow = true;
       this.scene.add(shelter);
 
       // Shelter posts
-      for (const [dx, dz] of [[-3, -1.5], [3, -1.5], [-3, 1.5], [3, 1.5]]) {
+      const posts = isEW
+        ? [[-1.5, -3], [-1.5, 3], [1.5, -3], [1.5, 3]]
+        : [[-3, -1.5], [3, -1.5], [-3, 1.5], [3, 1.5]];
+      for (const [dx, dz] of posts) {
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.15, 2.5, 0.15), mat(0x808890));
         post.position.set(sPos.x + dx, MONO_Y + 1.2, sPos.z + dz);
         this.scene.add(post);
